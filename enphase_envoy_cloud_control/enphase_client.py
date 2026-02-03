@@ -31,7 +31,7 @@ class EnphaseClient:
         self.xsrf_token: str | None = None
         self.cookies: dict | None = None
         self.jwt_exp: int | None = None
-        self._load_cache()
+        self._cache_loaded: bool = False
 
     # -------------------------------------------------------------------------
     # CACHE
@@ -39,6 +39,7 @@ class EnphaseClient:
 
     def _load_cache(self):
         """Load cached JWT/XSRF tokens if present."""
+        self._cache_loaded = True
         try:
             if os.path.exists(CACHE_FILE):
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -167,6 +168,9 @@ class EnphaseClient:
 
     def _ensure_tokens(self, force_refresh=False):
         """Ensure JWT/XSRF tokens are present and valid."""
+        if not self._cache_loaded:
+            self._load_cache()
+
         needs_login = force_refresh or not self._jwt_valid()
         if needs_login or not self._cookies_present():
             _LOGGER.info("[Enphase] Refreshing authentication tokens.")
