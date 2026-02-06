@@ -190,16 +190,6 @@ cards:
 
 ---
 
-## Notes on compatibility and request ordering
-
-This integration preserves the same ordering used by the Enlighten web UI. In particular:
-
-* Schedule creation uses a validation step before adding.
-* Schedule operations keep the required sequence of calls so the server accepts changes consistently.
-* This is important if you also use `rest_command` automations; the integration aims to remain compatible with those patterns.
-
----
-
 ## Troubleshooting
 
 ### Schedules not showing / stale data
