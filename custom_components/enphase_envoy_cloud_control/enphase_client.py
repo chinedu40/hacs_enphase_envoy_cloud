@@ -9,7 +9,6 @@ from typing import Any
 import requests
 
 _LOGGER = logging.getLogger(__name__)
-SESSION = requests.Session()
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "auth.json")
@@ -23,6 +22,7 @@ class EnphaseClient:
     """Handles Enphase Cloud authentication and API calls."""
 
     def __init__(self, email: str, password: str, user_id: str | None, battery_id: str | None):
+        """Initialize the Enphase API client with per-instance HTTP session."""
         self.email = email
         self.password = password
         self.user_id = user_id
@@ -31,13 +31,21 @@ class EnphaseClient:
         self.xsrf_token: str | None = None
         self.cookies: dict | None = None
         self.jwt_exp: int | None = None
+        # Each client instance gets its own session to avoid cross-instance
+        # cookie/token contamination when multiple config entries are loaded.
+        self.session = requests.Session()
 
     # -------------------------------------------------------------------------
     # CACHE
     # -------------------------------------------------------------------------
 
     def load_cache(self):
-        """Load cached JWT/XSRF tokens if present."""
+        """Load cached JWT/XSRF tokens from disk if the cache file exists.
+
+        Populates jwt_token, xsrf_token, cookies, user_id, and battery_id
+        from the last persisted auth state.  Missing or corrupt cache files
+        are silently ignored — a fresh login will be performed instead.
+        """
         try:
             if os.path.exists(CACHE_FILE):
                 with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -51,7 +59,7 @@ class EnphaseClient:
                     if not self.battery_id:
                         self.battery_id = data.get("battery_id")
                     if isinstance(self.cookies, dict):
-                        SESSION.cookies.update(self.cookies)
+                        self.session.cookies.update(self.cookies)
                     _LOGGER.debug("[Enphase] Loaded cached tokens")
         except Exception as exc:
             _LOGGER.warning("[Enphase] Failed to load cache: %s", exc)
@@ -63,7 +71,7 @@ class EnphaseClient:
             data = {
                 "jwt": self.jwt_token,
                 "xsrf": self.xsrf_token,
-                "cookies": requests.utils.dict_from_cookiejar(SESSION.cookies),
+                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies),
                 "jwt_exp": self.jwt_exp,
                 "user_id": self.user_id,
                 "battery_id": self.battery_id,
@@ -80,7 +88,7 @@ class EnphaseClient:
 
     def _csrf_login_token(self):
         """Get authenticity_token for login."""
-        r = SESSION.get("https://enlighten.enphaseenergy.com/login", timeout=30)
+        r = self.session.get("https://enlighten.enphaseenergy.com/login", timeout=30)
         if not r.ok:
             raise AuthError("Failed to access login page.")
         match = re.search(
@@ -95,7 +103,7 @@ class EnphaseClient:
         if not self.email or not self.password:
             raise AuthError("Email and password are required for login.")
 
-        SESSION.cookies.clear()
+        self.session.cookies.clear()
         authenticity = self._csrf_login_token()
         payload = {
             "utf8": "✓",
@@ -104,7 +112,7 @@ class EnphaseClient:
             "user[password]": self.password,
         }
 
-        r = SESSION.post(
+        r = self.session.post(
             "https://enlighten.enphaseenergy.com/login/login",
             data=payload,
             timeout=30,
@@ -112,7 +120,7 @@ class EnphaseClient:
         if not r.ok:
             raise AuthError("Login failed.")
 
-        jwt_resp = SESSION.get(
+        jwt_resp = self.session.get(
             "https://enlighten.enphaseenergy.com/app-api/jwt_token.json", timeout=30
         )
         jwt_json = jwt_resp.json()
@@ -147,16 +155,16 @@ class EnphaseClient:
             "username": str(self.user_id),
         }
         payload = {"scheduleType": "dtg"}
-        r = SESSION.post(url, json=payload, headers=headers, timeout=30)
-        if "BP-XSRF-Token" in SESSION.cookies:
-            self.xsrf_token = SESSION.cookies["BP-XSRF-Token"]
+        r = self.session.post(url, json=payload, headers=headers, timeout=30)
+        if "BP-XSRF-Token" in self.session.cookies:
+            self.xsrf_token = self.session.cookies["BP-XSRF-Token"]
         if not self.xsrf_token and "BP-XSRF-Token" in r.headers.get("Set-Cookie", ""):
             match = re.search(r"BP-XSRF-Token=([^;]+)", r.headers["Set-Cookie"])
             if match:
                 self.xsrf_token = match.group(1)
         if not self.xsrf_token:
             raise AuthError("Failed to retrieve XSRF token.")
-        SESSION.cookies.set(
+        self.session.cookies.set(
             "BP-XSRF-Token",
             self.xsrf_token,
             domain="enlighten.enphaseenergy.com",
@@ -165,7 +173,15 @@ class EnphaseClient:
         _LOGGER.debug("[Enphase] XSRF token updated.")
 
     def _ensure_tokens(self, force_refresh=False):
-        """Ensure JWT/XSRF tokens are present and valid."""
+        """Ensure JWT and XSRF tokens are valid, refreshing them if necessary.
+
+        Args:
+            force_refresh: When True, always perform a full re-login regardless
+                of the current token expiry state.
+
+        Returns:
+            Tuple of (jwt_token, xsrf_token).
+        """
         needs_login = force_refresh or not self._jwt_valid()
         if needs_login or not self._cookies_present():
             _LOGGER.info("[Enphase] Refreshing authentication tokens.")
@@ -186,7 +202,7 @@ class EnphaseClient:
         return {"user_id": self.user_id, "battery_id": self.battery_id}
 
     def _cookies_present(self) -> bool:
-        return bool(SESSION.cookies)
+        return bool(self.session.cookies)
 
     def _jwt_valid(self) -> bool:
         if not self.jwt_token:
@@ -229,7 +245,7 @@ class EnphaseClient:
 
     def _discover_ids(self) -> None:
         """Auto-discover numeric battery/site ID and user ID."""
-        final_url = SESSION.get(
+        final_url = self.session.get(
             "https://enlighten.enphaseenergy.com/",
             timeout=30,
             allow_redirects=True,
@@ -244,7 +260,7 @@ class EnphaseClient:
             "https://enlighten.enphaseenergy.com/app-api/"
             f"{site_id}/data.json?app=1&device_status=non_retired&is_mobile=0"
         )
-        app_data = SESSION.get(app_url, timeout=30).json()
+        app_data = self.session.get(app_url, timeout=30).json()
         app_block = app_data.get("app", {})
         user_id = (
             app_block.get("userId")
@@ -267,6 +283,38 @@ class EnphaseClient:
         )
 
     # -------------------------------------------------------------------------
+    # HTTP HELPERS
+    # -------------------------------------------------------------------------
+
+    def _request_with_retry(self, method: str, url: str, headers: dict, **kwargs) -> "requests.Response":
+        """Execute an HTTP request, refreshing tokens once on 403 and retrying.
+
+        This consolidates the duplicated 403-refresh-retry pattern that was
+        previously repeated in every API method.
+        """
+        r = getattr(self.session, method)(url, headers=headers, **kwargs)
+        if r.status_code == 403:
+            _LOGGER.warning("[Enphase] 403 on %s %s – refreshing tokens and retrying.", method.upper(), url)
+            jwt, xsrf = self._ensure_tokens(force_refresh=True)
+            headers["e-auth-token"] = jwt
+            headers["x-xsrf-token"] = xsrf
+            headers["cookie"] = f"BP-XSRF-Token={xsrf}"
+            r = getattr(self.session, method)(url, headers=headers, **kwargs)
+        return r
+
+    def _build_api_headers(self, jwt: str, xsrf: str) -> dict:
+        """Return the standard headers used for all battery config API calls."""
+        return {
+            "content-type": "application/json",
+            "e-auth-token": jwt,
+            "x-xsrf-token": xsrf,
+            "username": str(self.user_id),
+            "origin": "https://battery-profile-ui.enphaseenergy.com",
+            "referer": "https://battery-profile-ui.enphaseenergy.com/",
+            "cookie": f"BP-XSRF-Token={xsrf}",
+        }
+
+    # -------------------------------------------------------------------------
     # DATA
     # -------------------------------------------------------------------------
 
@@ -277,20 +325,8 @@ class EnphaseClient:
             f"https://enlighten.enphaseenergy.com/service/batteryConfig/api/v1/"
             f"batterySettings/{self.battery_id}?userId={self.user_id}&source=enho"
         )
-        headers = {
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "cookie": f"BP-XSRF-Token={xsrf}",
-        }
-        r = SESSION.get(url, headers=headers, timeout=30)
-        if r.status_code == 403:
-            _LOGGER.warning("[Enphase] 403 Forbidden on battery_settings – refreshing XSRF.")
-            jwt, xsrf = self._ensure_tokens(force_refresh=True)
-            headers["e-auth-token"] = jwt
-            headers["x-xsrf-token"] = xsrf
-            r = SESSION.get(url, headers=headers, timeout=30)
+        headers = self._build_api_headers(jwt, xsrf)
+        r = self._request_with_retry("get", url, headers, timeout=30)
         r.raise_for_status()
         _LOGGER.debug("[Enphase] Battery settings fetched.")
         return r.json()
@@ -300,10 +336,17 @@ class EnphaseClient:
     # -------------------------------------------------------------------------
 
     def set_mode(self, mode: str, enable: bool, start_time: str | None = None, end_time: str | None = None):
-        """
-        Toggle Enphase battery control modes via the cloud API.
+        """Toggle an Enphase battery control mode via the cloud API.
 
-        Accepts either short names (cfg/dtg/rbd) or full keys (cfgControl/dtgControl/rbdControl).
+        Args:
+            mode: Short name ('cfg', 'dtg', 'rbd') or full key
+                  ('cfgControl', 'dtgControl', 'rbdControl').
+            enable: True to enable the mode, False to disable.
+            start_time: Optional HH:MM start time, used only for 'dtg' mode.
+            end_time: Optional HH:MM end time, used only for 'dtg' mode.
+
+        Raises:
+            ValueError: If an unrecognised mode name is supplied.
         """
         valid_modes = ["cfg", "dtg", "rbd", "cfgControl", "dtgControl", "rbdControl"]
         if mode not in valid_modes:
@@ -314,15 +357,7 @@ class EnphaseClient:
         _LOGGER.info("[Enphase] Setting mode '%s' -> %s", short_mode, enable)
 
         jwt, xsrf = self._ensure_tokens()
-        headers = {
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "origin": "https://battery-profile-ui.enphaseenergy.com",
-            "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
-        }
+        headers = self._build_api_headers(jwt, xsrf)
 
         # Payload mapping for each mode type
         if short_mode == "cfg":
@@ -356,23 +391,8 @@ class EnphaseClient:
             {k: v for k, v in headers.items() if k != "e-auth-token"},
             payload,
         )
-        r = SESSION.put(url, json=payload, headers=headers, timeout=30)
-        _LOGGER.debug(
-            "[Enphase] set_mode response: status=%s body=%s",
-            r.status_code,
-            r.text,
-        )
-        if r.status_code == 403:
-            _LOGGER.warning("[Enphase] 403 Forbidden on set_mode(%s) – refreshing XSRF and retrying", short_mode)
-            jwt, xsrf = self._ensure_tokens(force_refresh=True)
-            headers["e-auth-token"] = jwt
-            headers["x-xsrf-token"] = xsrf
-            r = SESSION.put(url, json=payload, headers=headers, timeout=30)
-            _LOGGER.debug(
-                "[Enphase] set_mode retry response: status=%s body=%s",
-                r.status_code,
-                r.text,
-            )
+        r = self._request_with_retry("put", url, headers, json=payload, timeout=30)
+        _LOGGER.debug("[Enphase] set_mode response: status=%s body=%s", r.status_code, r.text)
 
         if not r.ok:
             _LOGGER.error("[Enphase] set_mode(%s) failed: %s %s", short_mode, r.status_code, r.text)
@@ -392,22 +412,8 @@ class EnphaseClient:
             f"https://enlighten.enphaseenergy.com/service/batteryConfig/api/v1/"
             f"battery/sites/{self.battery_id}/schedules"
         )
-        headers = {
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "origin": "https://battery-profile-ui.enphaseenergy.com",
-            "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
-        }
-        r = SESSION.get(url, headers=headers, timeout=30)
-        if r.status_code == 403:
-            _LOGGER.warning("[Enphase] 403 on get_schedules – refreshing tokens.")
-            jwt, xsrf = self._ensure_tokens(force_refresh=True)
-            headers["e-auth-token"] = jwt
-            headers["x-xsrf-token"] = xsrf
-            r = SESSION.get(url, headers=headers, timeout=30)
+        headers = self._build_api_headers(jwt, xsrf)
+        r = self._request_with_retry("get", url, headers, timeout=30)
         r.raise_for_status()
         return r.json()
 
@@ -420,22 +426,26 @@ class EnphaseClient:
         days,
         timezone="UTC",
     ):
-        """Add a new schedule entry (mirrors your REST command)."""
+        """Create a new battery schedule via the Enphase cloud API.
+
+        Args:
+            schedule_type: One of 'CFG', 'DTG', or 'RBD' (case-insensitive).
+            start_time: Schedule start time as 'HH:MM'.
+            end_time: Schedule end time as 'HH:MM'.
+            limit: Battery charge/discharge limit as a percentage (0-100).
+            days: List of day integers (1=Monday … 7=Sunday).
+            timezone: IANA timezone string, defaults to 'UTC'.
+
+        Returns:
+            The parsed JSON response from the API.
+        """
         schedule_type = str(schedule_type).upper()
         jwt, xsrf = self._ensure_tokens()
         url = (
             f"https://enlighten.enphaseenergy.com/service/batteryConfig/api/v1/"
             f"battery/sites/{self.battery_id}/schedules"
         )
-        headers = {
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "origin": "https://battery-profile-ui.enphaseenergy.com",
-            "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
-        }
+        headers = self._build_api_headers(jwt, xsrf)
         payload = {
             "timezone": timezone or "UTC",
             "startTime": start_time[:5],
@@ -451,73 +461,36 @@ class EnphaseClient:
             {k: v for k, v in headers.items() if k != "e-auth-token"},
             payload,
         )
-        r = SESSION.post(url, json=payload, headers=headers, timeout=30)
-        _LOGGER.debug(
-            "[Enphase] add_schedule response: status=%s body=%s",
-            r.status_code,
-            r.text,
-        )
-        if r.status_code == 403:
-            jwt, xsrf = self._ensure_tokens(force_refresh=True)
-            headers["e-auth-token"] = jwt
-            headers["x-xsrf-token"] = xsrf
-            r = SESSION.post(url, json=payload, headers=headers, timeout=30)
-            _LOGGER.debug(
-                "[Enphase] add_schedule retry response: status=%s body=%s",
-                r.status_code,
-                r.text,
-            )
+        r = self._request_with_retry("post", url, headers, json=payload, timeout=30)
+        _LOGGER.debug("[Enphase] add_schedule response: status=%s body=%s", r.status_code, r.text)
         r.raise_for_status()
         _LOGGER.info("[Enphase] Schedule added successfully.")
         return r.json()
 
     def delete_schedule(self, schedule_id):
-        """Delete a schedule by ID (mirrors your REST command)."""
+        """Delete a schedule by ID."""
         jwt, xsrf = self._ensure_tokens()
         url = (
             f"https://enlighten.enphaseenergy.com/service/batteryConfig/api/v1/"
             f"battery/sites/{self.battery_id}/schedules/{schedule_id}/delete"
         )
-        headers = {
-            "accept": "application/json, text/plain, */*",
-            "accept-language": "en-GB,en-US;q=0.9,en;q=0.8",
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "origin": "https://battery-profile-ui.enphaseenergy.com",
-            "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"locale=en; BP-XSRF-Token={xsrf};",
-            "user-agent": "curl/8.14.1",
-        }
+        headers = self._build_api_headers(jwt, xsrf)
+        headers["accept"] = "application/json, text/plain, */*"
+        headers["accept-language"] = "en-GB,en-US;q=0.9,en;q=0.8"
         _LOGGER.info("[Enphase] Deleting schedule ID %s", schedule_id)
         _LOGGER.debug(
             "[Enphase] delete_schedule request: url=%s headers=%s",
             url,
             {k: v for k, v in headers.items() if k != "e-auth-token"},
         )
-        r = SESSION.post(url, json={}, headers=headers, timeout=30)
-        _LOGGER.debug(
-            "[Enphase] delete_schedule response: status=%s body=%s",
-            r.status_code,
-            r.text,
-        )
-        if r.status_code == 403:
-            jwt, xsrf = self._ensure_tokens(force_refresh=True)
-            headers["e-auth-token"] = jwt
-            headers["x-xsrf-token"] = xsrf
-            r = SESSION.post(url, json={}, headers=headers, timeout=30)
-            _LOGGER.debug(
-                "[Enphase] delete_schedule retry response: status=%s body=%s",
-                r.status_code,
-                r.text,
-            )
+        r = self._request_with_retry("post", url, headers, json={}, timeout=30)
+        _LOGGER.debug("[Enphase] delete_schedule response: status=%s body=%s", r.status_code, r.text)
         r.raise_for_status()
         _LOGGER.info("[Enphase] Schedule %s deleted successfully.", schedule_id)
         return True
 
     def validate_schedule(self, schedule_type="dtg", force_opted=False):
-        """Validate schedule feasibility (isValid endpoint)."""
+        """Validate schedule feasibility against the isValid endpoint."""
         schedule_type = str(schedule_type).upper()
         jwt, xsrf = self._ensure_tokens()
         url = (
@@ -527,27 +500,15 @@ class EnphaseClient:
         payload = {"scheduleType": schedule_type}
         if schedule_type == "CFG" and force_opted:
             payload["forceScheduleOpted"] = True
-        headers = {
-            "content-type": "application/json",
-            "e-auth-token": jwt,
-            "x-xsrf-token": xsrf,
-            "username": str(self.user_id),
-            "origin": "https://battery-profile-ui.enphaseenergy.com",
-            "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
-        }
+        headers = self._build_api_headers(jwt, xsrf)
         _LOGGER.debug(
             "[Enphase] validate_schedule request: url=%s headers=%s payload=%s",
             url,
             {k: v for k, v in headers.items() if k != "e-auth-token"},
             payload,
         )
-        r = SESSION.post(url, json=payload, headers=headers, timeout=30)
-        _LOGGER.debug(
-            "[Enphase] validate_schedule response: status=%s body=%s",
-            r.status_code,
-            r.text,
-        )
+        r = self._request_with_retry("post", url, headers, json=payload, timeout=30)
+        _LOGGER.debug("[Enphase] validate_schedule response: status=%s body=%s", r.status_code, r.text)
         r.raise_for_status()
         return r.json()
 

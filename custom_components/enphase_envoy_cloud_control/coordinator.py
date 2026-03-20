@@ -3,8 +3,9 @@ from datetime import timedelta, datetime, timezone
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
+import requests
 from .const import LOGGER, DEFAULT_POLL_INTERVAL
-from .enphase_client import EnphaseClient
+from .enphase_client import EnphaseClient, AuthError
 
 _LOGGER = LOGGER
 
@@ -23,7 +24,7 @@ class EnphaseCoordinator(DataUpdateCoordinator):
             battery_id=entry.data.get("battery_id"),
         )
 
-        # ✅ Custom polling interval (default 30s)
+        # Custom polling interval (default 30s), configurable via options flow.
         poll_interval = entry.options.get("poll_interval", DEFAULT_POLL_INTERVAL)
         self.update_interval = timedelta(seconds=poll_interval)
         _LOGGER.info(f"[Enphase] Polling interval set to {poll_interval}s")
@@ -46,9 +47,15 @@ class EnphaseCoordinator(DataUpdateCoordinator):
             self.last_successful_poll = datetime.now(timezone.utc)
             self.last_refresh = self.last_successful_poll.isoformat()
             return data
+        except AuthError as err:
+            _LOGGER.error("[Enphase] Authentication failed during update: %s", err)
+            raise UpdateFailed(f"Authentication error: {err}") from err
+        except requests.RequestException as err:
+            _LOGGER.error("[Enphase] Network error during update: %s", err)
+            raise UpdateFailed(f"Network error: {err}") from err
         except Exception as err:
-            _LOGGER.error("[Enphase] Error updating data: %s", err)
-            raise UpdateFailed(err)
+            _LOGGER.error("[Enphase] Unexpected error updating data: %s", err)
+            raise UpdateFailed(f"Unexpected error: {err}") from err
 
     def _fetch(self):
         """Synchronous fetch — runs inside executor."""
@@ -104,8 +111,10 @@ class EnphaseCoordinator(DataUpdateCoordinator):
             }
             _LOGGER.debug("[Enphase] Data fetch complete. Keys: %s", list(merged.keys()))
             return merged
+        except (AuthError, requests.RequestException):
+            raise
         except Exception as e:
-            _LOGGER.warning("[Enphase] Coordinator fetch failed: %s", e)
+            _LOGGER.warning("[Enphase] Coordinator fetch failed unexpectedly: %s", e)
             raise
 
     async def async_force_refresh(self):

@@ -1,11 +1,14 @@
 from __future__ import annotations
 import logging
+import re
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 from .const import DOMAIN
 from .options_flow import EnphaseOptionsFlowHandler
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -20,10 +23,15 @@ class EnphaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            # Basic validation
-            if not user_input.get("email") or not user_input.get("password"):
+            email = (user_input.get("email") or "").strip()
+            password = user_input.get("password") or ""
+
+            if not email or not password:
                 errors["base"] = "missing_credentials"
+            elif not _EMAIL_RE.match(email):
+                errors["email"] = "invalid_email"
             else:
+                user_input = {**user_input, "email": email}
                 await self.async_set_unique_id(user_input["email"])
                 self._abort_if_unique_id_configured()
                 _LOGGER.info(
