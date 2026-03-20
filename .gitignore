@@ -1,0 +1,24 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Auth cache (contains sensitive tokens)
+custom_components/enphase_envoy_cloud_control/.cache/
+
+# Editor / OS artifacts
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
