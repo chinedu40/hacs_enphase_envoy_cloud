@@ -27,6 +27,9 @@ async def async_setup_entry(hass, entry, async_add_entities):
             EnphaseEditorDaySwitch(entry.entry_id, key, is_new=True)
         )
 
+    # Add notification toggle switch
+    switches.append(EnphaseNotificationSwitch(entry))
+
     async_add_entities(switches, True)
 
 
@@ -110,3 +113,32 @@ class EnphaseEditorDaySwitch(SwitchEntity):
     @property
     def device_info(self):
         return schedule_editor_device_info(self.entry_id)
+
+
+class EnphaseNotificationSwitch(SwitchEntity):
+    """Switch to toggle notifications for schedule operations."""
+
+    def __init__(self, entry):
+        self.entry = entry
+        self._attr_name = "Enphase Notifications"
+        self._attr_unique_id = f"{entry.entry_id}_notifications"
+
+    @property
+    def is_on(self) -> bool:
+        return self.entry.options.get("notifications_enabled", True)
+
+    async def async_turn_on(self) -> None:
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, "notifications_enabled": True}
+        )
+        self.async_write_ha_state()
+
+    async def async_turn_off(self) -> None:
+        self.hass.config_entries.async_update_entry(
+            self.entry, options={**self.entry.options, "notifications_enabled": False}
+        )
+        self.async_write_ha_state()
+
+    @property
+    def device_info(self):
+        return battery_device_info(self.entry.entry_id)
