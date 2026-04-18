@@ -306,15 +306,20 @@ def _register_services(hass: HomeAssistant) -> None:
             ) from exc
 
         if "persistent_notification" in hass.config.components:
-            persistent_notification.async_create(
-                hass,
-            (
-                "✅ Schedule added successfully for "
-                f"{schedule_type.upper()} ({start_str}–{end_str})."
-            ),
-            title="Enphase Envoy Cloud Control",
-            notification_id=f"{DOMAIN}_schedule_add",
+            # Check if notifications are enabled in options
+            notifications_enabled = coordinator.entry.options.get(
+                "notifications_enabled", True
             )
+            if notifications_enabled:
+                persistent_notification.async_create(
+                    hass,
+                (
+                    "✅ Schedule added successfully for "
+                    f"{schedule_type.upper()} ({start_str}–{end_str})."
+                ),
+                title="Enphase Envoy Cloud Control",
+                notification_id=f"{DOMAIN}_schedule_add",
+                )
 
         async_call_later(
             hass,
@@ -512,12 +517,17 @@ def _register_services(hass: HomeAssistant) -> None:
                 ) from exc
 
         if "persistent_notification" in hass.config.components:
-            persistent_notification.async_create(
-                hass,
-                f"🗑️ Schedule(s) deleted successfully: {', '.join(schedule_ids)}.",
-                title="Enphase Envoy Cloud Control",
-                notification_id=f"{DOMAIN}_schedule_delete",
+            # Check if notifications are enabled in options
+            notifications_enabled = coordinator.entry.options.get(
+                "notifications_enabled", True
             )
+            if notifications_enabled:
+                persistent_notification.async_create(
+                    hass,
+                    f"🗑️ Schedule(s) deleted successfully: {', '.join(schedule_ids)}.",
+                    title="Enphase Envoy Cloud Control",
+                    notification_id=f"{DOMAIN}_schedule_delete",
+                )
 
         async_call_later(
             hass,
@@ -549,12 +559,17 @@ def _register_services(hass: HomeAssistant) -> None:
                 message = f"✅ Schedule valid: {detail}"
 
         if "persistent_notification" in hass.config.components:
-            persistent_notification.async_create(
-                hass,
-                message,
-                title="Enphase Envoy Cloud Control",
-                notification_id=f"{DOMAIN}_schedule_validate",
+            # Check if notifications are enabled in options
+            notifications_enabled = coordinator.entry.options.get(
+                "notifications_enabled", True
             )
+            if notifications_enabled:
+                persistent_notification.async_create(
+                    hass,
+                    message,
+                    title="Enphase Envoy Cloud Control",
+                    notification_id=f"{DOMAIN}_schedule_validate",
+                )
 
     hass.services.async_register(
         DOMAIN,

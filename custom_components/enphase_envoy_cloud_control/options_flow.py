@@ -44,6 +44,12 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
                         "poll_interval", DEFAULT_POLL_INTERVAL
                     ),
                 ): int,
+                vol.Optional(
+                    "notifications_enabled",
+                    default=self._config_entry.options.get(
+                        "notifications_enabled", True
+                    ),
+                ): bool,
             }
         )
 
