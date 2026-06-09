@@ -1,13 +1,21 @@
+"""Options flow: polling/notification settings and schedule add/delete forms."""
+
 from __future__ import annotations
+
+from typing import Any
 
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components import persistent_notification
+from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
 from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 from .const import LOGGER as _LOGGER
+
+__all__ = ["EnphaseOptionsFlowHandler"]
 
 SERVICE_ADD_SCHEDULE = "add_schedule"
 SERVICE_DELETE_SCHEDULE = "delete_schedule"
@@ -16,11 +24,13 @@ SERVICE_DELETE_SCHEDULE = "delete_schedule"
 class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options for Enphase Envoy Cloud Control."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry):
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
         self._last_error: str | None = None
 
-    async def async_step_init(self, user_input=None):
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Manage the Enphase options."""
         source = self.context.get("source")
         _LOGGER.debug(
@@ -59,7 +69,9 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
             description_placeholders={"interval": DEFAULT_POLL_INTERVAL},
         )
 
-    async def async_step_schedule_add(self, user_input=None):
+    async def async_step_schedule_add(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Interactive form for adding a schedule via the options flow."""
         _LOGGER.debug(
             "[Enphase] Options flow schedule_add: user_input=%s",
@@ -92,7 +104,8 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
                 except HomeAssistantError as err:
                     self._last_error = str(err)
                     errors["base"] = "service_error"
-                    self.hass.components.persistent_notification.async_create(
+                    persistent_notification.async_create(
+                        self.hass,
                         f"⚠️ Failed to add schedule: {self._last_error}",
                         title="Enphase Envoy Cloud Control",
                         notification_id=f"{DOMAIN}_schedule_add_error",
@@ -151,7 +164,9 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
             description_placeholders=description_placeholders,
         )
 
-    async def async_step_schedule_delete(self, user_input=None):
+    async def async_step_schedule_delete(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Interactive form for deleting a schedule via the options flow."""
         _LOGGER.debug(
             "[Enphase] Options flow schedule_delete: user_input=%s",
@@ -163,7 +178,8 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
 
         options = self._schedule_options()
         if not options:
-            self.hass.components.persistent_notification.async_create(
+            persistent_notification.async_create(
+                self.hass,
                 "⚠️ No schedules available to delete.",
                 title="Enphase Envoy Cloud Control",
                 notification_id=f"{DOMAIN}_schedule_delete_error",
@@ -189,7 +205,8 @@ class EnphaseOptionsFlowHandler(config_entries.OptionsFlow):
                 except HomeAssistantError as err:
                     self._last_error = str(err)
                     errors["base"] = "service_error"
-                    self.hass.components.persistent_notification.async_create(
+                    persistent_notification.async_create(
+                        self.hass,
                         f"⚠️ Failed to delete schedule: {self._last_error}",
                         title="Enphase Envoy Cloud Control",
                         notification_id=f"{DOMAIN}_schedule_delete_error",

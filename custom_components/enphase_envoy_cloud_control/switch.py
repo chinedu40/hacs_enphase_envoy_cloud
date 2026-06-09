@@ -1,16 +1,32 @@
+"""Switches for Enphase battery control modes and schedule editor day flags."""
+
 from __future__ import annotations
+
 import asyncio
 import logging
+from typing import Any
+
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from .const import DOMAIN
+
+from .coordinator import EnphaseCoordinator
 from .device import battery_device_info, schedule_editor_device_info
 from .editor import DAY_ORDER, get_coordinator, get_entry_data
+
+__all__ = ["EnphaseEditorDaySwitch", "EnphaseModeSwitch", "async_setup_entry"]
 
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Enphase mode and editor day switches from a config entry."""
     coordinator = get_coordinator(hass, entry.entry_id)
     data = coordinator.data.get("data", {}) if coordinator.data else {}
     switches = []
@@ -33,7 +49,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class EnphaseModeSwitch(CoordinatorEntity, SwitchEntity):
     """Switch representing an Enphase battery control mode."""
 
-    def __init__(self, coordinator, key):
+    def __init__(self, coordinator: EnphaseCoordinator, key: str) -> None:
         super().__init__(coordinator)
         self.key = key
         self.short_mode = key.replace("Control", "")
@@ -43,14 +59,14 @@ class EnphaseModeSwitch(CoordinatorEntity, SwitchEntity):
     # ------------------------------------------------------------------
 
     @property
-    def is_on(self):
+    def is_on(self) -> bool:
         """Return True if the control mode is enabled."""
         try:
             return self.coordinator.data["data"][self.key]["enabled"]
-        except Exception:
+        except (KeyError, TypeError):
             return False
 
-    async def async_turn_on(self):
+    async def async_turn_on(self) -> None:
         """Enable the mode in Enphase Cloud."""
         _LOGGER.info("[Enphase] Turning ON %s", self.short_mode)
         await self.coordinator.hass.async_add_executor_job(
@@ -60,7 +76,7 @@ class EnphaseModeSwitch(CoordinatorEntity, SwitchEntity):
         await asyncio.sleep(5)
         await self.coordinator.async_force_refresh()
 
-    async def async_turn_off(self):
+    async def async_turn_off(self) -> None:
         """Disable the mode in Enphase Cloud."""
         _LOGGER.info("[Enphase] Turning OFF %s", self.short_mode)
         await self.coordinator.hass.async_add_executor_job(
@@ -72,7 +88,7 @@ class EnphaseModeSwitch(CoordinatorEntity, SwitchEntity):
     # ------------------------------------------------------------------
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         """Attach to Enphase Envoy Cloud device."""
         return battery_device_info(self.coordinator.entry.entry_id)
 
@@ -80,7 +96,7 @@ class EnphaseModeSwitch(CoordinatorEntity, SwitchEntity):
 class EnphaseEditorDaySwitch(SwitchEntity):
     """Switch representing a weekday toggle for schedule editing."""
 
-    def __init__(self, entry_id: str, day_key: str, is_new: bool):
+    def __init__(self, entry_id: str, day_key: str, is_new: bool) -> None:
         self.entry_id = entry_id
         self.day_key = day_key
         self.is_new = is_new
@@ -108,5 +124,5 @@ class EnphaseEditorDaySwitch(SwitchEntity):
         self.async_write_ha_state()
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)

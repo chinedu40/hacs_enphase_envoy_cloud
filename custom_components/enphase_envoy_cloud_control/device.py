@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from .const import DEVICE_KIND_BATTERY, DEVICE_KIND_SCHEDULE_EDITOR, DOMAIN
 
+__all__ = ["battery_device_info", "schedule_editor_device_info"]
+
 
 def battery_device_info(entry_id: str) -> dict:
     """Return device info for the main battery device."""

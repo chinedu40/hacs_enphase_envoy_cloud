@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from homeassistant.components.select import SelectEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .coordinator import EnphaseCoordinator
 from .device import schedule_editor_device_info
 from .editor import (
     editor_days_from_list,
@@ -15,10 +19,16 @@ from .editor import (
     normalize_schedules,
 )
 
+__all__ = ["EnphaseNewScheduleTypeSelect", "EnphaseScheduleSelect", "async_setup_entry"]
+
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup_entry(hass, entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up schedule select entities."""
     coordinator = get_coordinator(hass, entry.entry_id)
     async_add_entities(
@@ -36,18 +46,18 @@ class EnphaseScheduleSelect(SelectEntity):
     _attr_name = "Enphase Schedule Selected"
     _attr_icon = "mdi:calendar-edit"
 
-    def __init__(self, coordinator, entry_id: str):
+    def __init__(self, coordinator: EnphaseCoordinator, entry_id: str) -> None:
         self.coordinator = coordinator
         self.entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_schedule_selected"
 
     @property
-    def options(self):
+    def options(self) -> list[str]:
         schedules = normalize_schedules(self.coordinator)
         return [schedule["id"] for schedule in schedules]
 
     @property
-    def current_option(self):
+    def current_option(self) -> str | None:
         editor = get_entry_data(self.hass, self.entry_id)["editor"]
         return editor.get("selected_schedule_id")
 
@@ -66,7 +76,7 @@ class EnphaseScheduleSelect(SelectEntity):
         self.async_write_ha_state()
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)
 
 
@@ -76,17 +86,17 @@ class EnphaseNewScheduleTypeSelect(SelectEntity):
     _attr_name = "Enphase New Schedule Type"
     _attr_icon = "mdi:calendar-plus"
 
-    def __init__(self, entry_id: str):
+    def __init__(self, entry_id: str) -> None:
         self.entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_new_schedule_type"
         self._attr_options = ["cfg", "dtg", "rbd"]
 
     @property
-    def options(self):
+    def options(self) -> list[str]:
         return list(self._attr_options)
 
     @property
-    def current_option(self):
+    def current_option(self) -> str | None:
         entry_data = get_entry_data(self.hass, self.entry_id)
         return entry_data["new_editor"].get("schedule_type", "cfg")
 
@@ -99,5 +109,5 @@ class EnphaseNewScheduleTypeSelect(SelectEntity):
         self.async_write_ha_state()
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)

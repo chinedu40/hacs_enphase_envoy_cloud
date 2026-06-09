@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 from datetime import time
+from typing import Any
 
 from homeassistant.components.time import TimeEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
 from .device import schedule_editor_device_info
 from .editor import get_entry_data
 
+__all__ = ["EnphaseScheduleTime", "async_setup_entry"]
 
-async def async_setup_entry(hass, entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up schedule time entities."""
     async_add_entities(
         [
@@ -36,7 +45,7 @@ def _parse_time(value: str | None) -> time | None:
 class EnphaseScheduleTime(TimeEntity):
     """Time entity for schedule start/end."""
 
-    def __init__(self, entry_id: str, key: str, is_new: bool):
+    def __init__(self, entry_id: str, key: str, is_new: bool) -> None:
         self.entry_id = entry_id
         self.key = key
         self.is_new = is_new
@@ -62,5 +71,5 @@ class EnphaseScheduleTime(TimeEntity):
         self.async_write_ha_state()
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)

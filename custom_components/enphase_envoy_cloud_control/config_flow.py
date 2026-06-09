@@ -1,11 +1,20 @@
+"""Config flow for Enphase Envoy Cloud Control (Enlighten credentials)."""
+
 from __future__ import annotations
+
 import logging
+from typing import Any
+
 import voluptuous as vol
+
 from homeassistant import config_entries
 from homeassistant.core import callback
-from homeassistant.helpers import selector
+from homeassistant.data_entry_flow import FlowResult
+
 from .const import DOMAIN
 from .options_flow import EnphaseOptionsFlowHandler
+
+__all__ = ["EnphaseConfigFlow"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -15,7 +24,9 @@ class EnphaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
         """Handle the initial step for setup."""
         errors = {}
 
@@ -47,7 +58,9 @@ class EnphaseConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     @callback
-    def async_get_options_flow(config_entry):
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> EnphaseOptionsFlowHandler:
         """Return the options flow handler."""
         _LOGGER.debug(
             "[Enphase] Creating options flow handler for entry_id=%s",
