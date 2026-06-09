@@ -13,13 +13,16 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.event import async_call_later
 
 from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 from .coordinator import EnphaseCoordinator
-from .editor import default_editor_state, default_new_editor_state
+from .editor import _collect_schedules, default_editor_state, default_new_editor_state
+from .enphase_client import AuthError
+
+__all__ = ["async_setup_entry", "async_unload_entry"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,7 +129,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_handle_options_update))
 
-    await coordinator.async_initialize_auth()
+    try:
+        await coordinator.async_initialize_auth()
+    except AuthError as err:
+        raise ConfigEntryNotReady(f"Enphase authentication failed: {err}") from err
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -246,6 +252,8 @@ def _register_services(hass: HomeAssistant) -> None:
         limit = int(data["limit"])
         days = sorted({int(day) for day in cv.ensure_list(data["days"])})
 
+        # Input validation lives here (not in the voluptuous schema) so the
+        # user gets a clear, actionable error message in the UI.
         if not days:
             raise HomeAssistantError("Select at least one day for the schedule.")
 
@@ -615,38 +623,6 @@ def _schedule_post_action_refresh(
     hass.loop.call_soon_threadsafe(
         hass.async_create_task, _post_action_refresh(coordinator)
     )
-
-
-def _collect_schedules(coordinator: EnphaseCoordinator, mode: str) -> list[dict[str, Any]]:
-    """Collect cached schedules for the given mode."""
-    data_root = coordinator.data or {}
-    schedule_block = data_root.get("data", {}).get(f"{mode}Control", {})
-    schedules = schedule_block.get("schedules")
-    if isinstance(schedules, list):
-        return schedules
-
-    fallback = data_root.get("schedules", {})
-    if isinstance(fallback, dict):
-        candidate = fallback.get(mode)
-        if isinstance(candidate, dict) and isinstance(candidate.get("details"), list):
-            return candidate["details"]
-        if isinstance(candidate, list):
-            return candidate
-        inner = fallback.get("data", {}).get(mode)
-        if isinstance(inner, dict) and isinstance(inner.get("details"), list):
-            return inner["details"]
-        if isinstance(inner, list):
-            return inner
-
-    cached = getattr(coordinator.client, "_last_schedules", None)
-    if isinstance(cached, dict):
-        candidate = cached.get(mode)
-        if isinstance(candidate, dict) and isinstance(candidate.get("details"), list):
-            return candidate["details"]
-        if isinstance(candidate, list):
-            return candidate
-
-    return []
 
 
 def _mode_settings_from_data(
