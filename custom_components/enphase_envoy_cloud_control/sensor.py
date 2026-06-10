@@ -22,12 +22,47 @@ from .enphase_client import AuthError
 
 __all__ = [
     "EnphaseBatteryModesSensor",
+    "EnphaseBatterySettingSensor",
     "EnphaseScheduleSensor",
     "EnphaseSchedulesSummarySensor",
     "async_setup_entry",
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+# Read-only scalar fields from the batterySettings payload, exposed as sensors
+# when the cloud reports them for this system:
+# (payload key, name, unique_id suffix, icon, unit)
+SETTING_SENSORS: list[tuple[str, str, str, str, str | None]] = [
+    (
+        "batteryBackupPercentage",
+        "Enphase Battery Reserve",
+        "battery_reserve",
+        "mdi:battery-arrow-down",
+        "%",
+    ),
+    (
+        "profile",
+        "Enphase Battery Profile",
+        "battery_profile",
+        "mdi:home-battery",
+        None,
+    ),
+    (
+        "batteryGridMode",
+        "Enphase Battery Grid Mode",
+        "battery_grid_mode",
+        "mdi:transmission-tower",
+        None,
+    ),
+    (
+        "veryLowSoc",
+        "Enphase Battery Very Low SoC",
+        "battery_very_low_soc",
+        "mdi:battery-alert",
+        "%",
+    ),
+]
 
 
 async def async_setup_entry(
@@ -37,13 +72,65 @@ async def async_setup_entry(
 ) -> None:
     """Set up Enphase sensors from a config entry."""
     coordinator = get_coordinator(hass, entry.entry_id)
-    sensors = [EnphaseBatteryModesSensor(coordinator), EnphaseSchedulesSummarySensor(coordinator)]
+    sensors: list[SensorEntity] = [
+        EnphaseBatteryModesSensor(coordinator),
+        EnphaseSchedulesSummarySensor(coordinator),
+    ]
 
     # Add per-mode schedule sensors
     for mode in ["cfg", "dtg", "rbd"]:
         sensors.append(EnphaseScheduleSensor(coordinator, mode))
 
+    # Add read-only setting sensors for fields this system actually reports.
+    inner = (coordinator.data or {}).get("data", {})
+    if isinstance(inner, dict):
+        for key, name, suffix, icon, unit in SETTING_SENSORS:
+            if key in inner:
+                sensors.append(
+                    EnphaseBatterySettingSensor(
+                        coordinator, key, name, suffix, icon, unit
+                    )
+                )
+            else:
+                _LOGGER.debug(
+                    "[Enphase] Skipping %s sensor; '%s' not in battery settings.",
+                    name,
+                    key,
+                )
+
     async_add_entities(sensors, True)
+
+
+class EnphaseBatterySettingSensor(CoordinatorEntity, SensorEntity):
+    """Read-only sensor for a scalar field of the batterySettings payload."""
+
+    def __init__(
+        self,
+        coordinator: EnphaseCoordinator,
+        key: str,
+        name: str,
+        unique_suffix: str,
+        icon: str,
+        unit: str | None,
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = name
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_suffix}"
+        self._attr_icon = icon
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+
+    @property
+    def native_value(self) -> Any:
+        inner = (self.coordinator.data or {}).get("data", {})
+        if not isinstance(inner, dict):
+            return None
+        return inner.get(self._key)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return battery_device_info(self.coordinator.entry.entry_id)
 
 
 # ---------------------------------------------------------------------------

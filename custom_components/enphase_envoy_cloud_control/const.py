@@ -26,7 +26,7 @@ __all__ = [
 
 DOMAIN = "enphase_envoy_cloud_control"
 NAME = "Enphase Envoy Cloud Control"
-VERSION = "1.6.0"
+VERSION = "1.7.0"
 DEVICE_KIND_BATTERY = "battery"
 DEVICE_KIND_SCHEDULE_EDITOR = "schedule_editor"
 
