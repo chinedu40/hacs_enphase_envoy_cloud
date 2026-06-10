@@ -23,13 +23,9 @@ __all__ = ["AuthError", "EnphaseClient"]
 
 _LOGGER = logging.getLogger(__name__)
 
-# NOTE: the session (and therefore its cookie jar) is module-level and shared
-# across every EnphaseClient instance / config entry. This is a known
-# limitation that prevents true multi-account support.
-SESSION = requests.Session()
-
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
-CACHE_FILE = os.path.join(CACHE_DIR, "auth.json")
+# Legacy single-account cache location (pre per-entry caches).
+LEGACY_CACHE_FILE = os.path.join(CACHE_DIR, "auth.json")
 
 BATTERY_PROFILE_ORIGIN = "https://battery-profile-ui.enphaseenergy.com"
 
@@ -47,6 +43,8 @@ class EnphaseClient:
         password: str,
         user_id: str | None,
         battery_id: str | None,
+        cache_key: str | None = None,
+        persist_cache: bool = True,
     ) -> None:
         self.email = email
         self.password = password
@@ -56,6 +54,15 @@ class EnphaseClient:
         self.xsrf_token: str | None = None
         self.cookies: dict | None = None
         self.jwt_exp: int | None = None
+        # Each client owns its session/cookie jar so multiple config entries
+        # (accounts) no longer clobber each other's authentication state.
+        self._session = requests.Session()
+        self._persist_cache = persist_cache
+        if cache_key:
+            safe_key = re.sub(r"[^0-9A-Za-z_-]", "_", cache_key)
+            self._cache_file = os.path.join(CACHE_DIR, f"auth_{safe_key}.json")
+        else:
+            self._cache_file = LEGACY_CACHE_FILE
 
     # -------------------------------------------------------------------------
     # CACHE
@@ -64,9 +71,20 @@ class EnphaseClient:
     def load_cache(self) -> None:
         """Load cached JWT/XSRF tokens if present."""
         try:
-            if os.path.exists(CACHE_FILE):
-                with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cache_path = self._cache_file
+            if not os.path.exists(cache_path) and os.path.exists(LEGACY_CACHE_FILE):
+                # One-time migration from the pre-multi-account cache file.
+                cache_path = LEGACY_CACHE_FILE
+            if os.path.exists(cache_path):
+                with open(cache_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    # Never adopt another account's cached tokens.
+                    cached_email = data.get("email")
+                    if cached_email and cached_email != self.email:
+                        _LOGGER.debug(
+                            "[Enphase] Ignoring cached tokens for other account."
+                        )
+                        return
                     self.jwt_token = data.get("jwt")
                     self.xsrf_token = data.get("xsrf")
                     self.cookies = data.get("cookies")
@@ -76,24 +94,27 @@ class EnphaseClient:
                     if not self.battery_id:
                         self.battery_id = data.get("battery_id")
                     if isinstance(self.cookies, dict):
-                        SESSION.cookies.update(self.cookies)
+                        self._session.cookies.update(self.cookies)
                     _LOGGER.debug("[Enphase] Loaded cached tokens")
         except (OSError, ValueError, TypeError) as exc:
             _LOGGER.warning("[Enphase] Failed to load cache: %s", exc)
 
     def _save_cache(self) -> None:
         """Persist JWT/XSRF tokens."""
+        if not self._persist_cache:
+            return
         try:
             os.makedirs(CACHE_DIR, exist_ok=True)
             data = {
+                "email": self.email,
                 "jwt": self.jwt_token,
                 "xsrf": self.xsrf_token,
-                "cookies": requests.utils.dict_from_cookiejar(SESSION.cookies),
+                "cookies": requests.utils.dict_from_cookiejar(self._session.cookies),
                 "jwt_exp": self.jwt_exp,
                 "user_id": self.user_id,
                 "battery_id": self.battery_id,
             }
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            with open(self._cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f)
             _LOGGER.debug("[Enphase] Cache saved.")
         except (OSError, TypeError) as exc:
@@ -105,7 +126,7 @@ class EnphaseClient:
 
     def _csrf_login_token(self) -> str:
         """Get authenticity_token for login."""
-        r = SESSION.get("https://enlighten.enphaseenergy.com/login", timeout=30)
+        r = self._session.get("https://enlighten.enphaseenergy.com/login", timeout=30)
         if not r.ok:
             raise AuthError("Failed to access login page.")
         match = re.search(
@@ -121,7 +142,7 @@ class EnphaseClient:
             raise AuthError("Email and password are required for login.")
 
         _LOGGER.debug("[Enphase] Logging in to Enphase Enlighten as %s", self.email)
-        SESSION.cookies.clear()
+        self._session.cookies.clear()
         authenticity = self._csrf_login_token()
         payload = {
             "utf8": "✓",
@@ -130,7 +151,7 @@ class EnphaseClient:
             "user[password]": self.password,
         }
 
-        r = SESSION.post(
+        r = self._session.post(
             "https://enlighten.enphaseenergy.com/login/login",
             data=payload,
             timeout=30,
@@ -138,7 +159,7 @@ class EnphaseClient:
         if not r.ok:
             raise AuthError("Login failed.")
 
-        jwt_resp = SESSION.get(
+        jwt_resp = self._session.get(
             "https://enlighten.enphaseenergy.com/app-api/jwt_token.json", timeout=30
         )
         jwt_json = jwt_resp.json()
@@ -174,16 +195,16 @@ class EnphaseClient:
             "username": str(self.user_id),
         }
         payload = {"scheduleType": "dtg"}
-        r = SESSION.post(url, json=payload, headers=headers, timeout=30)
-        if "BP-XSRF-Token" in SESSION.cookies:
-            self.xsrf_token = SESSION.cookies["BP-XSRF-Token"]
+        r = self._session.post(url, json=payload, headers=headers, timeout=30)
+        if "BP-XSRF-Token" in self._session.cookies:
+            self.xsrf_token = self._session.cookies["BP-XSRF-Token"]
         if not self.xsrf_token and "BP-XSRF-Token" in r.headers.get("Set-Cookie", ""):
             match = re.search(r"BP-XSRF-Token=([^;]+)", r.headers["Set-Cookie"])
             if match:
                 self.xsrf_token = match.group(1)
         if not self.xsrf_token:
             raise AuthError("Failed to retrieve XSRF token.")
-        SESSION.cookies.set(
+        self._session.cookies.set(
             "BP-XSRF-Token",
             self.xsrf_token,
             domain="enlighten.enphaseenergy.com",
@@ -217,7 +238,7 @@ class EnphaseClient:
         return {"user_id": self.user_id, "battery_id": self.battery_id}
 
     def _cookies_present(self) -> bool:
-        return bool(SESSION.cookies)
+        return bool(self._session.cookies)
 
     def _jwt_valid(self) -> bool:
         if not self.jwt_token:
@@ -260,7 +281,7 @@ class EnphaseClient:
 
     def _discover_ids(self) -> None:
         """Auto-discover numeric battery/site ID and user ID."""
-        final_url = SESSION.get(
+        final_url = self._session.get(
             "https://enlighten.enphaseenergy.com/",
             timeout=30,
             allow_redirects=True,
@@ -275,7 +296,7 @@ class EnphaseClient:
             "https://enlighten.enphaseenergy.com/app-api/"
             f"{site_id}/data.json?app=1&device_status=non_retired&is_mobile=0"
         )
-        app_data = SESSION.get(app_url, timeout=30).json()
+        app_data = self._session.get(app_url, timeout=30).json()
         app_block = app_data.get("app", {})
         user_id = (
             app_block.get("userId")
@@ -361,7 +382,7 @@ class EnphaseClient:
         kwargs: dict[str, Any] = {"headers": headers, "timeout": 30}
         if json_payload is not None:
             kwargs["json"] = json_payload
-        r = SESSION.request(method, url, **kwargs)
+        r = self._session.request(method, url, **kwargs)
         _LOGGER.debug(
             "[Enphase] %s response: status=%s body=%s",
             context,
@@ -378,7 +399,7 @@ class EnphaseClient:
             # BP-XSRF-Token (matches the original per-method retry behaviour).
             headers["e-auth-token"] = jwt
             headers["x-xsrf-token"] = xsrf
-            r = SESSION.request(method, url, **kwargs)
+            r = self._session.request(method, url, **kwargs)
             _LOGGER.debug(
                 "[Enphase] %s retry response: status=%s body=%s",
                 context,
