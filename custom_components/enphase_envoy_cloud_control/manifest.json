@@ -1,7 +1,7 @@
 {
   "domain": "enphase_envoy_cloud_control",
   "name": "Enphase Envoy Cloud Control",
-  "version": "0.1",
+  "version": "1.7.0",
   "documentation": "https://github.com/chinedu40/hacs_enphase_envoy_cloud",
   "dependencies": [],
   "codeowners": ["@chinedu40"],

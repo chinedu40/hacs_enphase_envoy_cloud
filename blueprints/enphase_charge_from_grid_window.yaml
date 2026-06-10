@@ -1,0 +1,54 @@
+blueprint:
+  name: "Enphase: charge from grid during a time window"
+  description: >-
+    Turns the Enphase "Charge from Grid" (CFG) mode on at a start time and
+    off at an end time — useful for cheap-tariff windows. Pick the
+    "Enphase CFG Mode" switch created by the Enphase Envoy Cloud Control
+    integration. For dynamic tariffs, replace the time triggers with your
+    price sensor in the created automation.
+  domain: automation
+  source_url: https://github.com/chinedu40/hacs_enphase_envoy_cloud/blob/main/blueprints/enphase_charge_from_grid_window.yaml
+  input:
+    cfg_switch:
+      name: Charge from Grid switch
+      description: The "Enphase CFG Mode" switch entity.
+      selector:
+        entity:
+          domain: switch
+    start_time:
+      name: Window start
+      description: When grid charging should begin.
+      selector:
+        time:
+    end_time:
+      name: Window end
+      description: When grid charging should stop.
+      selector:
+        time:
+
+mode: single
+
+trigger:
+  - platform: time
+    at: !input start_time
+    id: window_start
+  - platform: time
+    at: !input end_time
+    id: window_end
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: window_start
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input cfg_switch
+      - conditions:
+          - condition: trigger
+            id: window_end
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input cfg_switch

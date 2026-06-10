@@ -1,26 +1,136 @@
+"""Sensors exposing Enphase battery mode state and schedule summaries."""
+
 from __future__ import annotations
+
 import logging
 from datetime import datetime, timezone
+from typing import Any
+
+import requests
+
 from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import EntityCategory
-from .const import DOMAIN
+
+from .coordinator import EnphaseCoordinator
 from .device import battery_device_info
 from .editor import normalize_schedules, get_coordinator
+from .enphase_client import AuthError
+
+__all__ = [
+    "EnphaseBatteryModesSensor",
+    "EnphaseBatterySettingSensor",
+    "EnphaseScheduleSensor",
+    "EnphaseSchedulesSummarySensor",
+    "async_setup_entry",
+]
 
 _LOGGER = logging.getLogger(__name__)
 
+# Read-only scalar fields from the batterySettings payload, exposed as sensors
+# when the cloud reports them for this system:
+# (payload key, name, unique_id suffix, icon, unit)
+SETTING_SENSORS: list[tuple[str, str, str, str, str | None]] = [
+    (
+        "batteryBackupPercentage",
+        "Enphase Battery Reserve",
+        "battery_reserve",
+        "mdi:battery-arrow-down",
+        "%",
+    ),
+    (
+        "profile",
+        "Enphase Battery Profile",
+        "battery_profile",
+        "mdi:home-battery",
+        None,
+    ),
+    (
+        "batteryGridMode",
+        "Enphase Battery Grid Mode",
+        "battery_grid_mode",
+        "mdi:transmission-tower",
+        None,
+    ),
+    (
+        "veryLowSoc",
+        "Enphase Battery Very Low SoC",
+        "battery_very_low_soc",
+        "mdi:battery-alert",
+        "%",
+    ),
+]
 
-async def async_setup_entry(hass, entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Enphase sensors from a config entry."""
     coordinator = get_coordinator(hass, entry.entry_id)
-    sensors = [EnphaseBatteryModesSensor(coordinator), EnphaseSchedulesSummarySensor(coordinator)]
+    sensors: list[SensorEntity] = [
+        EnphaseBatteryModesSensor(coordinator),
+        EnphaseSchedulesSummarySensor(coordinator),
+    ]
 
     # Add per-mode schedule sensors
     for mode in ["cfg", "dtg", "rbd"]:
         sensors.append(EnphaseScheduleSensor(coordinator, mode))
 
+    # Add read-only setting sensors for fields this system actually reports.
+    inner = (coordinator.data or {}).get("data", {})
+    if isinstance(inner, dict):
+        for key, name, suffix, icon, unit in SETTING_SENSORS:
+            if key in inner:
+                sensors.append(
+                    EnphaseBatterySettingSensor(
+                        coordinator, key, name, suffix, icon, unit
+                    )
+                )
+            else:
+                _LOGGER.debug(
+                    "[Enphase] Skipping %s sensor; '%s' not in battery settings.",
+                    name,
+                    key,
+                )
+
     async_add_entities(sensors, True)
+
+
+class EnphaseBatterySettingSensor(CoordinatorEntity, SensorEntity):
+    """Read-only sensor for a scalar field of the batterySettings payload."""
+
+    def __init__(
+        self,
+        coordinator: EnphaseCoordinator,
+        key: str,
+        name: str,
+        unique_suffix: str,
+        icon: str,
+        unit: str | None,
+    ) -> None:
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_name = name
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_{unique_suffix}"
+        self._attr_icon = icon
+        if unit:
+            self._attr_native_unit_of_measurement = unit
+
+    @property
+    def native_value(self) -> Any:
+        inner = (self.coordinator.data or {}).get("data", {})
+        if not isinstance(inner, dict):
+            return None
+        return inner.get(self._key)
+
+    @property
+    def device_info(self) -> dict[str, Any]:
+        return battery_device_info(self.coordinator.entry.entry_id)
 
 
 # ---------------------------------------------------------------------------
@@ -35,18 +145,17 @@ class EnphaseBatteryModesSensor(CoordinatorEntity, SensorEntity):
     _attr_device_class = SensorDeviceClass.ENUM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator: EnphaseCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_battery_modes"
 
     @property
-    def state(self):
+    def state(self) -> str:
         """Return basic status."""
         return "OK" if self.coordinator.data else "Unavailable"
 
-
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Expose detailed diagnostic data and timing."""
         try:
             data = self.coordinator.data or {}
@@ -89,12 +198,12 @@ class EnphaseBatteryModesSensor(CoordinatorEntity, SensorEntity):
                     attrs["last_successful_poll"] = t.strftime("%Y-%m-%dT%H:%M:%S%z")
 
             return attrs
-        except Exception as exc:
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError) as exc:
             _LOGGER.warning("Error parsing battery modes attributes: %s", exc)
             return {"error": str(exc)}
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         """Ensure the sensor is attached to the shared Enphase device."""
         return battery_device_info(self.coordinator.entry.entry_id)
 
@@ -106,17 +215,17 @@ class EnphaseSchedulesSummarySensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:calendar-multiple"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator: EnphaseCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_schedules_summary"
 
     @property
-    def state(self):
+    def state(self) -> str:
         schedules = normalize_schedules(self.coordinator)
         return str(len(schedules))
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         attrs = {
             "schedules": normalize_schedules(self.coordinator),
             "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -128,46 +237,8 @@ class EnphaseSchedulesSummarySensor(CoordinatorEntity, SensorEntity):
         return attrs
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return battery_device_info(self.coordinator.entry.entry_id)
-
-
-class EnphaseSchedulesSummarySensor(CoordinatorEntity, SensorEntity):
-    """Normalized schedule list for editor usage."""
-
-    _attr_name = "Enphase Schedules Summary"
-    _attr_icon = "mdi:calendar-multiple"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.entry.entry_id}_schedules_summary"
-
-    @property
-    def state(self):
-        schedules = normalize_schedules(self.coordinator)
-        return str(len(schedules))
-
-    @property
-    def extra_state_attributes(self):
-        attrs = {
-            "schedules": normalize_schedules(self.coordinator),
-            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z"),
-        }
-        if getattr(self.coordinator, "last_update_success_time", None):
-            t = self.coordinator.last_update_success_time
-            if isinstance(t, datetime):
-                attrs["last_successful_poll"] = t.strftime("%Y-%m-%dT%H:%M:%S%z")
-        return attrs
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "Enphase Envoy Cloud Control",
-            "manufacturer": "Enphase Energy",
-            "model": "Envoy Cloud API",
-        }
 
 
 # ---------------------------------------------------------------------------
@@ -179,14 +250,14 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
 
     _attr_icon = "mdi:calendar-clock"
 
-    def __init__(self, coordinator, mode: str):
+    def __init__(self, coordinator: EnphaseCoordinator, mode: str) -> None:
         super().__init__(coordinator)
         self.mode = mode  # cfg | dtg | rbd
         self._attr_name = f"Enphase {mode.upper()} Schedule"
         self._attr_unique_id = f"{coordinator.entry.entry_id}_{mode}_schedule"
 
     @property
-    def state(self):
+    def state(self) -> str:
         """Readable summary like '21:30–03:30, 05:00–06:00'."""
         scheds = self._schedules()
         if not scheds:
@@ -201,7 +272,7 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
         return ", ".join(state_parts)
 
     @property
-    def extra_state_attributes(self):
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Expose full schedule details with IDs."""
         attrs = {"schedules": self._schedules()}
         # Include metadata for clarity
@@ -218,7 +289,7 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
     # ---------------------------------------------------------------------
     # Async-safe schedule fetching with caching
     # ---------------------------------------------------------------------
-    async def _async_fetch_schedules_safe(self):
+    async def _async_fetch_schedules_safe(self) -> dict[str, Any]:
         """Fetch schedules via executor to avoid blocking."""
         try:
             schedules = await self.coordinator.hass.async_add_executor_job(
@@ -227,11 +298,11 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
             # Cache for reuse across sensors
             self.coordinator.client._last_schedules = schedules
             return schedules
-        except Exception as e:
+        except (AuthError, requests.RequestException, ValueError) as e:
             _LOGGER.warning("Async fetch failed for %s schedules: %s", self.mode, e)
             return {}
 
-    def _schedules(self):
+    def _schedules(self) -> list[dict[str, Any]]:
         """Return current schedules for this mode."""
         try:
             data_root = self.coordinator.data or {}
@@ -288,11 +359,11 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
                     if isinstance(m, list):
                         return m
             return []
-        except Exception as e:
+        except (AttributeError, KeyError, TypeError, ValueError, IndexError) as e:
             _LOGGER.warning("Failed to extract %s schedules: %s", self.mode, e)
             return []
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         """Ensure this sensor attaches to the same device as toggles."""
         return battery_device_info(self.coordinator.entry.entry_id)

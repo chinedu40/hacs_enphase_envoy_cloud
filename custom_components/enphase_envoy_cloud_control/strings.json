@@ -1,0 +1,73 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Enphase Enlighten",
+        "description": "Enter your Enphase Enlighten cloud account credentials.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        },
+        "data_description": {
+          "email": "The email address of your Enphase Enlighten account.",
+          "password": "The password of your Enphase Enlighten account."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Enphase Enlighten",
+        "description": "The stored credentials for {email} no longer work. Enter the current password to reconnect.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "missing_credentials": "Email and password are required.",
+      "invalid_auth": "Authentication failed. Check the email and password (and that the account can access a battery system).",
+      "cannot_connect": "Could not reach the Enphase cloud. Check your connection and try again."
+    },
+    "abort": {
+      "already_configured": "Account is already configured",
+      "reauth_successful": "Reauthentication was successful.",
+      "reauth_failed": "Reauthentication failed: the config entry no longer exists."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Enphase Envoy Cloud Control options",
+        "description": "Configure polling and notifications. The default polling interval is {interval} seconds.",
+        "data": {
+          "poll_interval": "Polling interval (seconds)",
+          "notifications_enabled": "Enable notifications"
+        }
+      },
+      "schedule_add": {
+        "title": "Add battery schedule",
+        "description": "Create a new battery schedule in the Enphase cloud.",
+        "data": {
+          "schedule_type": "Schedule type",
+          "start_time": "Start time",
+          "end_time": "End time",
+          "limit": "Limit (%)",
+          "days": "Days"
+        }
+      },
+      "schedule_delete": {
+        "title": "Delete battery schedules",
+        "description": "Select one or more schedules to delete from the Enphase cloud.",
+        "data": {
+          "schedule_ids": "Schedules",
+          "confirm": "Confirm deletion"
+        }
+      }
+    },
+    "error": {
+      "required": "This field is required.",
+      "service_error": "The operation failed. Check the notification or Home Assistant logs for details."
+    },
+    "abort": {
+      "no_schedules": "No schedules available to delete."
+    }
+  }
+}

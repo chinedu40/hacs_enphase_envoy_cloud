@@ -2,6 +2,16 @@
 
 This custom integration lets Home Assistant read and control Enphase battery settings using the same web endpoints the Enlighten / Battery Profile UI uses (not the official API). It focuses on **battery schedules** (cfg / dtg / rbd) and provides a simple, dashboard-friendly way to **view**, **add**, **edit**, and **delete** schedules.
 
+### Glossary
+
+| Term | Meaning |
+|------|---------|
+| **CFG** | **Charge from Grid** — charge the battery from the grid (e.g. during cheap tariff windows) |
+| **DTG** | **Discharge to Grid** — export battery energy to the grid |
+| **RBD** | **Restrict Battery Discharge** — stop the battery from discharging (e.g. save it for peak hours) |
+
+> **Note:** CFG and DTG must be enabled for your site by Enphase. If a feature is not enabled, the cloud may silently re-create deleted schedules (the integration detects this and tells you).
+
 ---
 
 ## What this integration gives you
@@ -31,7 +41,11 @@ This mirrors the Enlighten scheduling workflow, but uses standard Home Assistant
 ## Requirements
 
 - Home Assistant with the ability to install custom integrations
-- Your Enphase Enlighten credentials (username and password) 
+- Your Enphase Enlighten **homeowner** credentials (the email and password you use at enlighten.enphaseenergy.com)
+
+Credentials are validated during setup — if the login fails you will see an error in the setup form instead of broken entities later. If your password changes afterwards, Home Assistant will prompt you to **reauthenticate** (Settings → Devices & services → the integration shows a "Reauthenticate" repair).
+
+Multiple Enphase accounts are supported: add the integration once per account. Each entry keeps its own login session and token cache.
 
 ---
 
@@ -81,6 +95,14 @@ This mirrors the Enlighten scheduling workflow, but uses standard Home Assistant
 - `switch.<...dtg enabled...>`
 - `switch.<...rbd enabled...>`
 - `button.force_cloud_refresh`
+
+### Battery setting sensors (read-only, created when your system reports them)
+- `sensor.enphase_battery_reserve` — backup reserve percentage
+- `sensor.enphase_battery_profile` — active system profile
+- `sensor.enphase_battery_grid_mode` — current grid mode
+- `sensor.enphase_battery_very_low_soc` — very-low state-of-charge threshold
+
+These come straight from the battery settings payload the integration already polls; no extra cloud calls are made. If a field is not present for your system, the sensor is simply not created.
 
 ### Schedule editor controls
 **Edit existing schedule**
@@ -190,6 +212,77 @@ cards:
 
 ---
 
+## Services & automations
+
+The integration registers these services (see Developer Tools → Actions for full schemas):
+
+| Service | Purpose |
+|---------|---------|
+| `enphase_envoy_cloud_control.force_refresh` | Refresh cloud data immediately |
+| `enphase_envoy_cloud_control.add_schedule` | Create a schedule (validates feature support and **rejects overlapping schedules**) |
+| `enphase_envoy_cloud_control.update_schedule` | Replace an existing schedule |
+| `enphase_envoy_cloud_control.delete_schedule` | Delete schedule(s) — **verifies the cloud actually removed them** |
+| `enphase_envoy_cloud_control.validate_schedule` | Ask Enphase whether a schedule type is currently valid for your site |
+
+### Example: dynamic cheap-tariff charge window
+
+When your energy provider signals a cheap window (e.g. via a price sensor turning a `binary_sensor` on), create a one-hour CFG schedule and enable charging; remove it when the window ends:
+
+```yaml
+automation:
+  - alias: "Enphase: start grid charging in cheap window"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.cheap_energy_window
+        to: "on"
+    action:
+      - service: enphase_envoy_cloud_control.add_schedule
+        data:
+          schedule_type: cfg
+          start_time: "{{ now().strftime('%H:%M') }}"
+          end_time: "{{ (now() + timedelta(hours=1)).strftime('%H:%M') }}"
+          limit: 100
+          days: ["{{ now().isoweekday() }}"]
+      - service: switch.turn_on
+        target:
+          entity_id: switch.enphase_cfg_mode
+
+  - alias: "Enphase: stop grid charging after cheap window"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.cheap_energy_window
+        to: "off"
+    action:
+      - service: switch.turn_off
+        target:
+          entity_id: switch.enphase_cfg_mode
+      # Delete today's CFG schedules using the summary sensor's attributes
+      - service: enphase_envoy_cloud_control.delete_schedule
+        data:
+          confirm: true
+          schedule_ids: >-
+            {{ state_attr('sensor.enphase_schedules_summary', 'schedules')
+               | selectattr('type', 'eq', 'cfg')
+               | map(attribute='id') | list }}
+```
+
+### Blueprints
+
+Two importable blueprints ship in [`blueprints/`](blueprints/):
+
+- **Charge from grid during a time window** — toggles the CFG switch on/off at fixed times
+- **Block battery discharge during a time window** — toggles the RBD switch on/off (e.g. peak hours)
+
+Import via **Settings → Automations & scenes → Blueprints → Import blueprint** using the raw GitHub URL of the YAML file.
+
+---
+
+## Diagnostics
+
+The integration supports Home Assistant diagnostics: on the integration page choose **Download diagnostics** to get a redacted dump (credentials, tokens and IDs removed) that you can attach to bug reports.
+
+---
+
 ## Troubleshooting
 
 ### Schedules not showing / stale data
@@ -202,6 +295,13 @@ cards:
 * Check Home Assistant logs for the response body.
 * Ensure the day selection is not empty.
 * Ensure start and end are different.
+* Overlapping schedules of the same type are rejected before they reach Enphase — adjust the times or days.
+* If a deletion reports that Enphase restored the schedule, that feature (CFG/DTG) is likely not enabled for your site — contact Enphase support.
+
+### Authentication problems
+
+* A persistent notification appears when cloud authentication fails; the integration retries automatically.
+* After repeated failures Home Assistant shows a **Reauthenticate** prompt on the integration — enter your current Enlighten password there. No need to remove and re-add the integration.
 
 ### Device controls look cluttered
 

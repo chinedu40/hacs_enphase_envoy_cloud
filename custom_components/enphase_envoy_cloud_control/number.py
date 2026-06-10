@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-from homeassistant.components.number import NumberEntity
+from typing import Any
 
-from .const import DOMAIN
+from homeassistant.components.number import NumberEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
 from .device import schedule_editor_device_info
 from .editor import get_entry_data
 
+__all__ = ["EnphaseScheduleLimit", "async_setup_entry"]
 
-async def async_setup_entry(hass, entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up schedule number entities."""
     async_add_entities(
         [
@@ -28,7 +38,7 @@ class EnphaseScheduleLimit(NumberEntity):
     _attr_native_step = 1
     _attr_native_unit_of_measurement = "%"
 
-    def __init__(self, entry_id: str, is_new: bool):
+    def __init__(self, entry_id: str, is_new: bool) -> None:
         self.entry_id = entry_id
         self.is_new = is_new
         schedule_label = "New Schedule" if is_new else "Schedule"
@@ -49,5 +59,5 @@ class EnphaseScheduleLimit(NumberEntity):
         self.async_write_ha_state()
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)

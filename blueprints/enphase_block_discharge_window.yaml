@@ -1,0 +1,53 @@
+blueprint:
+  name: "Enphase: block battery discharge during a time window"
+  description: >-
+    Turns the Enphase "Restrict Battery Discharge" (RBD) mode on at a start
+    time and off at an end time — useful for preserving the battery for
+    evening peak hours. Pick the "Enphase RBD Mode" switch created by the
+    Enphase Envoy Cloud Control integration.
+  domain: automation
+  source_url: https://github.com/chinedu40/hacs_enphase_envoy_cloud/blob/main/blueprints/enphase_block_discharge_window.yaml
+  input:
+    rbd_switch:
+      name: Restrict Battery Discharge switch
+      description: The "Enphase RBD Mode" switch entity.
+      selector:
+        entity:
+          domain: switch
+    start_time:
+      name: Window start
+      description: When battery discharge should be blocked.
+      selector:
+        time:
+    end_time:
+      name: Window end
+      description: When battery discharge should be allowed again.
+      selector:
+        time:
+
+mode: single
+
+trigger:
+  - platform: time
+    at: !input start_time
+    id: window_start
+  - platform: time
+    at: !input end_time
+    id: window_end
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: window_start
+        sequence:
+          - service: switch.turn_on
+            target:
+              entity_id: !input rbd_switch
+      - conditions:
+          - condition: trigger
+            id: window_end
+        sequence:
+          - service: switch.turn_off
+            target:
+              entity_id: !input rbd_switch

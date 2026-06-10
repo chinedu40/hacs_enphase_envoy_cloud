@@ -13,13 +13,21 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, ServiceCall
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import ConfigEntryNotReady, HomeAssistantError
 from homeassistant.helpers import config_validation as cv, device_registry as dr
 from homeassistant.helpers.event import async_call_later
 
 from .const import DEFAULT_POLL_INTERVAL, DOMAIN
 from .coordinator import EnphaseCoordinator
-from .editor import default_editor_state, default_new_editor_state
+from .editor import (
+    _collect_schedules,
+    default_editor_state,
+    default_new_editor_state,
+    normalize_schedules,
+)
+from .enphase_client import AuthError
+
+__all__ = ["async_setup_entry", "async_unload_entry"]
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,6 +116,86 @@ VALIDATE_SCHEDULE_SCHEMA = vol.Schema(
 )
 
 
+def _hhmm_to_minutes(value: str) -> int:
+    """Convert 'HH:MM' to minutes since midnight."""
+    hours, minutes = str(value).split(":")
+    return int(hours) * 60 + int(minutes)
+
+
+def _time_intervals(start: str, end: str) -> list[tuple[int, int]]:
+    """Return minute intervals for a schedule, splitting midnight wraps."""
+    try:
+        start_min = _hhmm_to_minutes(start)
+        end_min = _hhmm_to_minutes(end)
+    except (ValueError, AttributeError):
+        return []
+    if start_min == end_min:
+        return []
+    if start_min < end_min:
+        return [(start_min, end_min)]
+    return [(start_min, 1440), (0, end_min)]
+
+
+def _find_schedule_conflict(
+    coordinator: EnphaseCoordinator,
+    schedule_type: str,
+    start_str: str,
+    end_str: str,
+    days: list[int],
+    exclude_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return the first existing same-mode schedule that overlaps, if any."""
+    new_intervals = _time_intervals(start_str, end_str)
+    new_days = set(days)
+    for sched in normalize_schedules(coordinator):
+        if sched.get("type") != schedule_type:
+            continue
+        if exclude_id is not None and str(sched.get("id")) == str(exclude_id):
+            continue
+        if not new_days & set(sched.get("days") or []):
+            continue
+        for new_iv in new_intervals:
+            for old_iv in _time_intervals(sched.get("start", ""), sched.get("end", "")):
+                if new_iv[0] < old_iv[1] and old_iv[0] < new_iv[1]:
+                    return sched
+    return None
+
+
+def _check_mode_supported(coordinator: EnphaseCoordinator, schedule_type: str) -> None:
+    """Raise if the battery settings payload shows no support for this mode.
+
+    Enphase silently re-creates schedules deleted for non-enabled features
+    (see issue #38), so refuse to create them in the first place.
+    """
+    inner = (coordinator.data or {}).get("data", {})
+    if isinstance(inner, dict) and inner and f"{schedule_type}Control" not in inner:
+        raise HomeAssistantError(
+            f"Your Enphase system does not appear to support "
+            f"{schedule_type.upper()} (no {schedule_type}Control block in the "
+            "battery settings). This feature may need to be enabled by Enphase "
+            "for your site."
+        )
+
+
+def _extract_schedule_ids(payload: Any) -> set[str]:
+    """Collect every scheduleId present anywhere in a schedules payload."""
+    ids: set[str] = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            schedule_id = node.get("scheduleId")
+            if schedule_id is not None:
+                ids.add(str(schedule_id))
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                _walk(value)
+
+    _walk(payload)
+    return ids
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Enphase Envoy Cloud Control from a config entry."""
     _LOGGER.info("Setting up Enphase Envoy Cloud Control integration.")
@@ -126,7 +214,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     entry.async_on_unload(entry.add_update_listener(_async_handle_options_update))
 
-    await coordinator.async_initialize_auth()
+    try:
+        await coordinator.async_initialize_auth()
+    except AuthError as err:
+        raise ConfigEntryNotReady(f"Enphase authentication failed: {err}") from err
     await coordinator.async_config_entry_first_refresh()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -246,6 +337,8 @@ def _register_services(hass: HomeAssistant) -> None:
         limit = int(data["limit"])
         days = sorted({int(day) for day in cv.ensure_list(data["days"])})
 
+        # Input validation lives here (not in the voluptuous schema) so the
+        # user gets a clear, actionable error message in the UI.
         if not days:
             raise HomeAssistantError("Select at least one day for the schedule.")
 
@@ -253,6 +346,18 @@ def _register_services(hass: HomeAssistant) -> None:
         end_str = end_time.strftime("%H:%M")
         if start_str == end_str:
             raise HomeAssistantError("Start time and end time must differ for a schedule.")
+
+        _check_mode_supported(coordinator, schedule_type)
+
+        conflict = _find_schedule_conflict(
+            coordinator, schedule_type, start_str, end_str, days
+        )
+        if conflict:
+            raise HomeAssistantError(
+                f"Schedule overlaps an existing {schedule_type.upper()} schedule "
+                f"({conflict.get('start')}–{conflict.get('end')}, "
+                f"id {conflict.get('id')}). Adjust the times or days."
+            )
 
         timezone = hass.config.time_zone or "UTC"
 
@@ -345,6 +450,18 @@ def _register_services(hass: HomeAssistant) -> None:
             raise HomeAssistantError("Start time and end time must differ for a schedule.")
         if not days:
             raise HomeAssistantError("Select at least one day for the schedule.")
+
+        _check_mode_supported(coordinator, schedule_type)
+
+        conflict = _find_schedule_conflict(
+            coordinator, schedule_type, start_str, end_str, days, exclude_id=schedule_id
+        )
+        if conflict:
+            raise HomeAssistantError(
+                f"Schedule overlaps an existing {schedule_type.upper()} schedule "
+                f"({conflict.get('start')}–{conflict.get('end')}, "
+                f"id {conflict.get('id')}). Adjust the times or days."
+            )
 
         timezone = hass.config.time_zone or "UTC"
 
@@ -467,6 +584,33 @@ def _register_services(hass: HomeAssistant) -> None:
                 raise HomeAssistantError(
                     f"Failed to delete schedule {schedule_id}: {exc}"
                 ) from exc
+
+        # Verify the deletion actually stuck: Enphase silently restores
+        # schedules for features that are not enabled for the site (issue #38),
+        # while still returning a success status for the delete call.
+        await asyncio.sleep(2)
+        try:
+            remaining = await hass.async_add_executor_job(
+                coordinator.client.get_schedules
+            )
+        except Exception as exc:
+            _LOGGER.warning(
+                "[Enphase] Could not verify schedule deletion (fetch failed): %s",
+                exc,
+            )
+            remaining = None
+        if remaining is not None:
+            still_present = sorted(
+                set(schedule_ids) & _extract_schedule_ids(remaining)
+            )
+            if still_present:
+                raise HomeAssistantError(
+                    "Enphase reported success but did not actually delete "
+                    f"schedule(s): {', '.join(still_present)}. This usually "
+                    "means the feature (e.g. CFG/DTG) is not enabled for your "
+                    "system, so the cloud restores the schedule. Contact "
+                    "Enphase support to remove it."
+                )
 
         affected_modes = {
             schedule_modes[sched_id]
@@ -615,38 +759,6 @@ def _schedule_post_action_refresh(
     hass.loop.call_soon_threadsafe(
         hass.async_create_task, _post_action_refresh(coordinator)
     )
-
-
-def _collect_schedules(coordinator: EnphaseCoordinator, mode: str) -> list[dict[str, Any]]:
-    """Collect cached schedules for the given mode."""
-    data_root = coordinator.data or {}
-    schedule_block = data_root.get("data", {}).get(f"{mode}Control", {})
-    schedules = schedule_block.get("schedules")
-    if isinstance(schedules, list):
-        return schedules
-
-    fallback = data_root.get("schedules", {})
-    if isinstance(fallback, dict):
-        candidate = fallback.get(mode)
-        if isinstance(candidate, dict) and isinstance(candidate.get("details"), list):
-            return candidate["details"]
-        if isinstance(candidate, list):
-            return candidate
-        inner = fallback.get("data", {}).get(mode)
-        if isinstance(inner, dict) and isinstance(inner.get("details"), list):
-            return inner["details"]
-        if isinstance(inner, list):
-            return inner
-
-    cached = getattr(coordinator.client, "_last_schedules", None)
-    if isinstance(cached, dict):
-        candidate = cached.get(mode)
-        if isinstance(candidate, dict) and isinstance(candidate.get("details"), list):
-            return candidate["details"]
-        if isinstance(candidate, list):
-            return candidate
-
-    return []
 
 
 def _mode_settings_from_data(

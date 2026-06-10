@@ -1,18 +1,41 @@
+"""Buttons for cloud refresh and schedule add/save/delete actions."""
+
 from __future__ import annotations
+
 import logging
+from typing import Any
 
 from homeassistant.components import persistent_notification
 from homeassistant.components.button import ButtonEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .coordinator import EnphaseCoordinator
 from .device import battery_device_info, schedule_editor_device_info
 from .editor import days_list_from_editor, get_coordinator, get_entry_data
 
+__all__ = [
+    "EnphaseAddScheduleButton",
+    "EnphaseDeleteScheduleButton",
+    "EnphaseForceCloudRefreshButton",
+    "EnphaseNewScheduleAddButton",
+    "EnphaseScheduleDeleteButton",
+    "EnphaseScheduleSaveButton",
+    "async_setup_entry",
+]
+
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass, entry, async_add_entities):
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up the Enphase Force Cloud Refresh button."""
     coordinator = get_coordinator(hass, entry.entry_id)
     async_add_entities(
@@ -30,7 +53,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class EnphaseForceCloudRefreshButton(CoordinatorEntity, ButtonEntity):
     """Button to manually force data refresh from the cloud."""
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator: EnphaseCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_name = "Force Cloud Refresh"
         self._attr_unique_id = f"{coordinator.entry.entry_id}_force_refresh"
@@ -41,7 +64,7 @@ class EnphaseForceCloudRefreshButton(CoordinatorEntity, ButtonEntity):
     def available(self) -> bool:
         return True  # Always available
 
-    async def async_press(self):
+    async def async_press(self) -> None:
         """Handle button press."""
         _LOGGER.info("[Enphase] Force Cloud Refresh button pressed.")
         try:
@@ -51,7 +74,7 @@ class EnphaseForceCloudRefreshButton(CoordinatorEntity, ButtonEntity):
             _LOGGER.error("[Enphase] Data refresh failed: %s", e)
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         """Attach this button to the Enphase device."""
         return battery_device_info(self.coordinator.entry.entry_id)
 
@@ -63,7 +86,7 @@ class EnphaseAddScheduleButton(CoordinatorEntity, ButtonEntity):
     _attr_icon = "mdi:calendar-plus"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator: EnphaseCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_add_schedule"
 
@@ -75,11 +98,8 @@ class EnphaseAddScheduleButton(CoordinatorEntity, ButtonEntity):
                 self.coordinator.entry.entry_id,
                 context={"source": "schedule_add_button"},
             )
-        except Exception as exc:
-            _LOGGER.exception(
-                "[Enphase] Failed to start add schedule options flow: %s",
-                exc,
-            )
+        except Exception:
+            _LOGGER.exception("[Enphase] Failed to start add schedule options flow")
             return
         flow_id = getattr(flow, "flow_id", None)
         _LOGGER.debug(
@@ -97,7 +117,7 @@ class EnphaseAddScheduleButton(CoordinatorEntity, ButtonEntity):
             )
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return battery_device_info(self.coordinator.entry.entry_id)
 
 
@@ -108,7 +128,7 @@ class EnphaseDeleteScheduleButton(CoordinatorEntity, ButtonEntity):
     _attr_icon = "mdi:calendar-remove"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, coordinator):
+    def __init__(self, coordinator: EnphaseCoordinator) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.entry.entry_id}_delete_schedule"
 
@@ -120,11 +140,8 @@ class EnphaseDeleteScheduleButton(CoordinatorEntity, ButtonEntity):
                 self.coordinator.entry.entry_id,
                 context={"source": "schedule_delete_button"},
             )
-        except Exception as exc:
-            _LOGGER.exception(
-                "[Enphase] Failed to start delete schedule options flow: %s",
-                exc,
-            )
+        except Exception:
+            _LOGGER.exception("[Enphase] Failed to start delete schedule options flow")
             return
         flow_id = getattr(flow, "flow_id", None)
         _LOGGER.debug(
@@ -142,7 +159,7 @@ class EnphaseDeleteScheduleButton(CoordinatorEntity, ButtonEntity):
             )
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return battery_device_info(self.coordinator.entry.entry_id)
 
 
@@ -153,7 +170,7 @@ class EnphaseScheduleSaveButton(ButtonEntity):
     _attr_icon = "mdi:content-save"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, entry_id: str):
+    def __init__(self, entry_id: str) -> None:
         self.entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_schedule_save"
 
@@ -182,7 +199,7 @@ class EnphaseScheduleSaveButton(ButtonEntity):
         )
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)
 
 
@@ -193,7 +210,7 @@ class EnphaseScheduleDeleteButton(ButtonEntity):
     _attr_icon = "mdi:calendar-remove"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, entry_id: str):
+    def __init__(self, entry_id: str) -> None:
         self.entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_schedule_delete"
 
@@ -215,7 +232,7 @@ class EnphaseScheduleDeleteButton(ButtonEntity):
         )
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)
 
 
@@ -226,7 +243,7 @@ class EnphaseNewScheduleAddButton(ButtonEntity):
     _attr_icon = "mdi:calendar-plus"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, entry_id: str):
+    def __init__(self, entry_id: str) -> None:
         self.entry_id = entry_id
         self._attr_unique_id = f"{entry_id}_new_schedule_add"
 
@@ -249,5 +266,5 @@ class EnphaseNewScheduleAddButton(ButtonEntity):
         )
 
     @property
-    def device_info(self):
+    def device_info(self) -> dict[str, Any]:
         return schedule_editor_device_info(self.entry_id)
