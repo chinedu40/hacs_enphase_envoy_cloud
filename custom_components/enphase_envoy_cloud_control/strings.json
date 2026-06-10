@@ -12,13 +12,24 @@
           "email": "The email address of your Enphase Enlighten account.",
           "password": "The password of your Enphase Enlighten account."
         }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate Enphase Enlighten",
+        "description": "The stored credentials for {email} no longer work. Enter the current password to reconnect.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
-      "missing_credentials": "Email and password are required."
+      "missing_credentials": "Email and password are required.",
+      "invalid_auth": "Authentication failed. Check the email and password (and that the account can access a battery system).",
+      "cannot_connect": "Could not reach the Enphase cloud. Check your connection and try again."
     },
     "abort": {
-      "already_configured": "Account is already configured"
+      "already_configured": "Account is already configured",
+      "reauth_successful": "Reauthentication was successful.",
+      "reauth_failed": "Reauthentication failed: the config entry no longer exists."
     }
   },
   "options": {

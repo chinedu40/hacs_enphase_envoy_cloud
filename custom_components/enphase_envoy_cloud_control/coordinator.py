@@ -11,6 +11,7 @@ from datetime import timedelta, datetime, timezone
 from typing import Any
 
 from homeassistant.components import persistent_notification
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -23,6 +24,10 @@ __all__ = ["EnphaseCoordinator"]
 _LOGGER = LOGGER
 
 AUTH_NOTIFICATION_ID = f"{DOMAIN}_auth_failure"
+
+# Consecutive auth failures tolerated as transient before triggering the
+# reauthentication flow (cloud hiccups should not prompt for a password).
+AUTH_FAILURES_BEFORE_REAUTH = 3
 
 
 class EnphaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -37,6 +42,7 @@ class EnphaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             password=entry.data.get("password"),
             user_id=entry.data.get("user_id"),
             battery_id=entry.data.get("battery_id"),
+            cache_key=entry.entry_id,
         )
 
         # Custom polling interval (default 30s)
@@ -47,6 +53,7 @@ class EnphaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.last_refresh: str | None = None
         self.last_successful_poll: datetime | None = None
         self._auth_notified = False
+        self._auth_failure_count = 0
 
         super().__init__(
             hass,
@@ -61,8 +68,19 @@ class EnphaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.debug("[Enphase] Starting scheduled data update.")
             data = await self.hass.async_add_executor_job(self._fetch)
         except AuthError as err:
-            _LOGGER.error("[Enphase] Authentication failed during update: %s", err)
+            self._auth_failure_count += 1
+            _LOGGER.error(
+                "[Enphase] Authentication failed during update (%s/%s): %s",
+                self._auth_failure_count,
+                AUTH_FAILURES_BEFORE_REAUTH,
+                err,
+            )
             self._async_notify_auth_failure(err)
+            if self._auth_failure_count >= AUTH_FAILURES_BEFORE_REAUTH:
+                # Persistent failure: trigger Home Assistant's reauth flow.
+                raise ConfigEntryAuthFailed(
+                    f"Enphase authentication failed repeatedly: {err}"
+                ) from err
             raise UpdateFailed(f"Authentication failed: {err}") from err
         except Exception as err:
             _LOGGER.error("[Enphase] Error updating data: %s", err)
@@ -70,6 +88,7 @@ class EnphaseCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.last_successful_poll = datetime.now(timezone.utc)
         self.last_refresh = self.last_successful_poll.isoformat()
+        self._auth_failure_count = 0
         self._async_dismiss_auth_failure()
         return data
 
