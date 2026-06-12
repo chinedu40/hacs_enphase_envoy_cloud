@@ -3,6 +3,7 @@ import base64
 import logging
 import os
 import json
+import pickle
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -13,6 +14,7 @@ SESSION = requests.Session()
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 CACHE_FILE = os.path.join(CACHE_DIR, "auth.json")
+COOKIE_FILE = os.path.join(CACHE_DIR, "cookies.pickle")
 
 
 class AuthError(Exception):
@@ -29,7 +31,6 @@ class EnphaseClient:
         self.battery_id = battery_id
         self.jwt_token: str | None = None
         self.xsrf_token: str | None = None
-        self.cookies: dict | None = None
         self.jwt_exp: int | None = None
 
     # -------------------------------------------------------------------------
@@ -44,15 +45,19 @@ class EnphaseClient:
                     data = json.load(f)
                     self.jwt_token = data.get("jwt")
                     self.xsrf_token = data.get("xsrf")
-                    self.cookies = data.get("cookies")
                     self.jwt_exp = data.get("jwt_exp")
                     if not self.user_id:
                         self.user_id = data.get("user_id")
                     if not self.battery_id:
                         self.battery_id = data.get("battery_id")
-                    if isinstance(self.cookies, dict):
-                        SESSION.cookies.update(self.cookies)
                     _LOGGER.debug("[Enphase] Loaded cached tokens")
+            # Restore the full cookiejar (preserving domain/path attributes) so the
+            # host-scoped session cookie (enlighten_manager_token_production) is sent
+            # to the battery API; a dict round-trip would drop those attributes.
+            if os.path.exists(COOKIE_FILE):
+                with open(COOKIE_FILE, "rb") as f:
+                    SESSION.cookies.update(pickle.load(f))
+                _LOGGER.debug("[Enphase] Loaded cached cookies")
         except Exception as exc:
             _LOGGER.warning("[Enphase] Failed to load cache: %s", exc)
 
@@ -63,13 +68,15 @@ class EnphaseClient:
             data = {
                 "jwt": self.jwt_token,
                 "xsrf": self.xsrf_token,
-                "cookies": requests.utils.dict_from_cookiejar(SESSION.cookies),
                 "jwt_exp": self.jwt_exp,
                 "user_id": self.user_id,
                 "battery_id": self.battery_id,
             }
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f)
+            # Persist the full cookiejar (not a dict) to keep domain/path attributes.
+            with open(COOKIE_FILE, "wb") as f:
+                pickle.dump(SESSION.cookies, f)
             _LOGGER.debug("[Enphase] Cache saved.")
         except Exception as exc:
             _LOGGER.warning("[Enphase] Failed to save cache: %s", exc)
@@ -282,7 +289,6 @@ class EnphaseClient:
             "e-auth-token": jwt,
             "x-xsrf-token": xsrf,
             "username": str(self.user_id),
-            "cookie": f"BP-XSRF-Token={xsrf}",
         }
         r = SESSION.get(url, headers=headers, timeout=30)
         if r.status_code == 403:
@@ -321,7 +327,6 @@ class EnphaseClient:
             "username": str(self.user_id),
             "origin": "https://battery-profile-ui.enphaseenergy.com",
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
         }
 
         # Payload mapping for each mode type
@@ -399,7 +404,6 @@ class EnphaseClient:
             "username": str(self.user_id),
             "origin": "https://battery-profile-ui.enphaseenergy.com",
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
         }
         r = SESSION.get(url, headers=headers, timeout=30)
         if r.status_code == 403:
@@ -434,7 +438,6 @@ class EnphaseClient:
             "username": str(self.user_id),
             "origin": "https://battery-profile-ui.enphaseenergy.com",
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
         }
         payload = {
             "timezone": timezone or "UTC",
@@ -487,7 +490,6 @@ class EnphaseClient:
             "username": str(self.user_id),
             "origin": "https://battery-profile-ui.enphaseenergy.com",
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"locale=en; BP-XSRF-Token={xsrf};",
             "user-agent": "curl/8.14.1",
         }
         _LOGGER.info("[Enphase] Deleting schedule ID %s", schedule_id)
@@ -534,7 +536,6 @@ class EnphaseClient:
             "username": str(self.user_id),
             "origin": "https://battery-profile-ui.enphaseenergy.com",
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
-            "cookie": f"BP-XSRF-Token={xsrf}",
         }
         _LOGGER.debug(
             "[Enphase] validate_schedule request: url=%s headers=%s payload=%s",
