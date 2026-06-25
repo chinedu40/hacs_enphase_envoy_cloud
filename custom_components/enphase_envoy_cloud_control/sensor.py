@@ -132,44 +132,6 @@ class EnphaseSchedulesSummarySensor(CoordinatorEntity, SensorEntity):
         return battery_device_info(self.coordinator.entry.entry_id)
 
 
-class EnphaseSchedulesSummarySensor(CoordinatorEntity, SensorEntity):
-    """Normalized schedule list for editor usage."""
-
-    _attr_name = "Enphase Schedules Summary"
-    _attr_icon = "mdi:calendar-multiple"
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(self, coordinator):
-        super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.entry.entry_id}_schedules_summary"
-
-    @property
-    def state(self):
-        schedules = normalize_schedules(self.coordinator)
-        return str(len(schedules))
-
-    @property
-    def extra_state_attributes(self):
-        attrs = {
-            "schedules": normalize_schedules(self.coordinator),
-            "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S%z"),
-        }
-        if getattr(self.coordinator, "last_update_success_time", None):
-            t = self.coordinator.last_update_success_time
-            if isinstance(t, datetime):
-                attrs["last_successful_poll"] = t.strftime("%Y-%m-%dT%H:%M:%S%z")
-        return attrs
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.entry.entry_id)},
-            "name": "Enphase Envoy Cloud Control",
-            "manufacturer": "Enphase Energy",
-            "model": "Envoy Cloud API",
-        }
-
-
 # ---------------------------------------------------------------------------
 # PER-MODE SCHEDULE SENSORS
 # ---------------------------------------------------------------------------
