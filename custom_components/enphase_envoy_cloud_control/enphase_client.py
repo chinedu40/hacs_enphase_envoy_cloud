@@ -302,6 +302,76 @@ class EnphaseClient:
         return r.json()
 
     # -------------------------------------------------------------------------
+    # CONSUMPTION / ENERGY STATS
+    # -------------------------------------------------------------------------
+
+    def get_today_stats(self) -> dict[str, Any]:
+        """Fetch today's energy production, consumption, import/export data.
+
+        Calls /pv/systems/{site_id}/today which returns 15-minute interval
+        data and totals (in Wh) for the current day. Only needs the session
+        cookie (no JWT/XSRF required).
+        """
+        site_id = self.battery_id
+        if not site_id:
+            raise AuthError("No site/battery ID available for today stats query.")
+
+        url = f"https://enlighten.enphaseenergy.com/pv/systems/{site_id}/today"
+        r = SESSION.get(url, timeout=30)
+        if r.status_code == 401:
+            _LOGGER.info("[Enphase] Session expired for today stats — re-authenticating.")
+            self._login()
+            r = SESSION.get(url, timeout=30)
+        r.raise_for_status()
+        _LOGGER.debug("[Enphase] Today stats fetched for site %s.", site_id)
+        return r.json()
+
+    def get_daily_energy(self, start_date: str) -> dict[str, Any]:
+        """Fetch daily energy stats from a start date onward.
+
+        Calls /pv/systems/{site_id}/daily_energy?start_date=YYYY-MM-DD
+        which returns an array of per-day stats objects, each with totals
+        in Wh. Only needs the session cookie.
+        """
+        site_id = self.battery_id
+        if not site_id:
+            raise AuthError("No site/battery ID available for daily energy query.")
+
+        url = (
+            f"https://enlighten.enphaseenergy.com/pv/systems/"
+            f"{site_id}/daily_energy?start_date={start_date}"
+        )
+        r = SESSION.get(url, timeout=30)
+        if r.status_code == 401:
+            _LOGGER.info("[Enphase] Session expired for daily energy — re-authenticating.")
+            self._login()
+            r = SESSION.get(url, timeout=30)
+        r.raise_for_status()
+        _LOGGER.debug("[Enphase] Daily energy fetched for site %s from %s.", site_id, start_date)
+        return r.json()
+
+    def get_lifetime_energy(self) -> dict[str, Any]:
+        """Fetch lifetime daily energy arrays.
+
+        Calls /pv/systems/{site_id}/lifetime_energy which returns daily
+        production and consumption arrays (in Wh) since the system was
+        commissioned. Only needs the session cookie.
+        """
+        site_id = self.battery_id
+        if not site_id:
+            raise AuthError("No site/battery ID available for lifetime energy query.")
+
+        url = f"https://enlighten.enphaseenergy.com/pv/systems/{site_id}/lifetime_energy"
+        r = SESSION.get(url, timeout=30)
+        if r.status_code == 401:
+            _LOGGER.info("[Enphase] Session expired for lifetime energy — re-authenticating.")
+            self._login()
+            r = SESSION.get(url, timeout=30)
+        r.raise_for_status()
+        _LOGGER.debug("[Enphase] Lifetime energy fetched for site %s.", site_id)
+        return r.json()
+
+    # -------------------------------------------------------------------------
     # ACTIONS (toggles)
     # -------------------------------------------------------------------------
 

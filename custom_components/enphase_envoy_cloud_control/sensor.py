@@ -1,9 +1,11 @@
 from __future__ import annotations
 import logging
-from datetime import datetime, timezone
-from homeassistant.components.sensor import SensorEntity, SensorDeviceClass
+from datetime import datetime, timedelta, timezone, date
+from homeassistant.components.sensor import SensorEntity, SensorDeviceClass, SensorStateClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.entity import EntityCategory
+from homeassistant.const import UnitOfEnergy
+from homeassistant.util import dt as dt_util
 from .const import DOMAIN
 from .device import battery_device_info
 from .editor import normalize_schedules, get_coordinator
@@ -14,7 +16,15 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, entry, async_add_entities):
     """Set up Enphase sensors from a config entry."""
     coordinator = get_coordinator(hass, entry.entry_id)
-    sensors = [EnphaseBatteryModesSensor(coordinator), EnphaseSchedulesSummarySensor(coordinator)]
+    sensors: list[SensorEntity] = [
+        EnphaseBatteryModesSensor(coordinator),
+        EnphaseSchedulesSummarySensor(coordinator),
+        EnphaseTodayConsumptionSensor(coordinator),
+        EnphaseWeekConsumptionSensor(coordinator),
+        EnphaseMonthConsumptionSensor(coordinator),
+        EnphaseYearConsumptionSensor(coordinator),
+        EnphaseLifetimeConsumptionSensor(coordinator),
+    ]
 
     # Add per-mode schedule sensors
     for mode in ["cfg", "dtg", "rbd"]:
@@ -257,4 +267,299 @@ class EnphaseScheduleSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self):
         """Ensure this sensor attaches to the same device as toggles."""
+        return battery_device_info(self.coordinator.entry.entry_id)
+
+
+# ---------------------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------------------
+
+def _today_totals(data: dict | None) -> dict:
+    """Return today's ``totals`` block from the */today* endpoint payload.
+
+    The */today* response nests its daily totals under ``stats[0].totals``
+    (there is no top-level ``totals`` key), so callers must reach through
+    the ``stats`` array.  Returns an empty dict when the data is missing.
+    """
+    if not isinstance(data, dict):
+        return {}
+    today = data.get("today")
+    if not isinstance(today, dict):
+        return {}
+    stats = today.get("stats")
+    if not isinstance(stats, list) or not stats:
+        return {}
+    first = stats[0]
+    if not isinstance(first, dict):
+        return {}
+    totals = first.get("totals")
+    return totals if isinstance(totals, dict) else {}
+
+
+def _sum_lifetime_since(
+    lifetime_energy: dict | None,
+    start_date: date | None,
+) -> int | float | None:
+    """Sum daily Wh values from *start_date* through today (inclusive).
+
+    The */lifetime_energy* ``consumption`` array runs from ``start_date``
+    up to and **including** today as its final element, so today's partial
+    accumulation is already counted — no separate add is required.
+
+    Parameters
+    ----------
+    lifetime_energy
+        Dict from the */lifetime_energy* endpoint with keys ``consumption``
+        (list of int) and ``start_date`` (``"YYYY-MM-DD"``).
+    start_date
+        Inclusive start of the period.  ``None`` means sum everything.
+
+    Returns
+    -------
+    Total Wh or ``None`` when data is missing.
+    """
+    if not isinstance(lifetime_energy, dict):
+        return None
+    consumption = lifetime_energy.get("consumption", [])
+    if not isinstance(consumption, list) or not consumption:
+        return None
+
+    ls = lifetime_energy.get("start_date")
+    if not ls:
+        return None
+
+    try:
+        array_start = datetime.strptime(ls, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+    if start_date is not None:
+        days_from_start = (start_date - array_start).days
+        if days_from_start < 0:
+            days_from_start = 0
+        vals = [v for v in consumption[days_from_start:] if isinstance(v, (int, float))]
+    else:
+        vals = [v for v in consumption if isinstance(v, (int, float))]
+
+    if not vals:
+        return None
+
+    return sum(vals)
+
+
+# ---------------------------------------------------------------------------
+# CONSUMPTION SENSORS  (kWh, converted from API Wh via /1000)
+# ---------------------------------------------------------------------------
+
+class EnphaseTodayConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """Today's total home energy consumption (kWh).
+
+    API: /pv/systems/{id}/today  →  totals.consumption
+    Covers: midnight → now.
+    """
+
+    _attr_icon = "mdi:home-lightning-bolt"
+    _attr_name = "Enphase Today Consumption"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_today_consumption"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        totals = _today_totals(data)
+        val = totals.get("consumption")
+        if val is None:
+            return None
+        return round(val / 1000, 3)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        attrs: dict = {}
+        data = self.coordinator.data or {}
+        today = data.get("today", {}) or {}
+        totals = _today_totals(data)
+        for key in ("production", "consumption", "import", "export",
+                    "charge", "discharge", "solar_home", "battery_home",
+                    "grid_home", "grid_battery", "battery_grid"):
+            val = totals.get(key)
+            if val is not None:
+                attrs[key] = val
+        battery = today.get("battery_details", {}) or {}
+        soc = battery.get("aggregate_soc")
+        if soc is not None:
+            attrs["battery_soc"] = soc
+        last_24h = battery.get("last_24h_consumption")
+        if last_24h is not None:
+            attrs["last_24h_consumption_wh"] = last_24h
+        status = today.get("siteStatus")
+        if status:
+            attrs["site_status"] = status
+        return attrs
+
+    @property
+    def available(self) -> bool:
+        data = self.coordinator.data or {}
+        return _today_totals(data).get("consumption") is not None
+
+    @property
+    def device_info(self):
+        return battery_device_info(self.coordinator.entry.entry_id)
+
+
+class EnphaseWeekConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """This week's total home energy consumption (kWh).
+
+    Period: Monday 00:00 → now.
+    Uses lifetime_energy.consumption, which already includes today.
+    """
+
+    _attr_icon = "mdi:calendar-week"
+    _attr_name = "Enphase Week Consumption"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_week_consumption"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        lifetime = data.get("lifetime_energy", {}) or {}
+        now = dt_util.now()
+        monday = (now - timedelta(days=now.weekday())).date()
+        total_wh = _sum_lifetime_since(lifetime, monday)
+        if total_wh is None:
+            return None
+        return round(total_wh / 1000, 3)
+
+    @property
+    def device_info(self):
+        return battery_device_info(self.coordinator.entry.entry_id)
+
+
+class EnphaseMonthConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """This month's total home energy consumption (kWh).
+
+    Period: 1st of month → now.
+    Uses daily_energy.stats (start_date = YYYY-MM-01), which already
+    includes today's partial data.
+    """
+
+    _attr_icon = "mdi:calendar-month"
+    _attr_name = "Enphase Month Consumption"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_month_consumption"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        daily = data.get("daily_energy", {}) or {}
+        stats = daily.get("stats")
+        if not isinstance(stats, list) or not stats:
+            return None
+        total = 0
+        for day in stats:
+            totals = day.get("totals", {}) if isinstance(day, dict) else {}
+            val = totals.get("consumption")
+            if isinstance(val, (int, float)):
+                total += val
+        return round(total / 1000, 3)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        daily = data.get("daily_energy", {}) or {}
+        attrs: dict = {}
+        if daily.get("start_date"):
+            attrs["start_date"] = daily["start_date"]
+        if daily.get("end_date"):
+            attrs["end_date"] = daily["end_date"]
+        return attrs
+
+    @property
+    def device_info(self):
+        return battery_device_info(self.coordinator.entry.entry_id)
+
+
+class EnphaseYearConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """This year's total home energy consumption (kWh).
+
+    Period: January 1st 00:00 → now.
+    Uses lifetime_energy.consumption, which already includes today.
+    """
+
+    _attr_icon = "mdi:calendar"
+    _attr_name = "Enphase Year Consumption"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_year_consumption"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        lifetime = data.get("lifetime_energy", {}) or {}
+        jan1 = dt_util.now().date().replace(month=1, day=1)
+        total_wh = _sum_lifetime_since(lifetime, jan1)
+        if total_wh is None:
+            return None
+        return round(total_wh / 1000, 3)
+
+    @property
+    def device_info(self):
+        return battery_device_info(self.coordinator.entry.entry_id)
+
+
+class EnphaseLifetimeConsumptionSensor(CoordinatorEntity, SensorEntity):
+    """Lifetime home energy consumption (kWh).
+
+    Period: system commissioning → now.
+    Uses all of lifetime_energy.consumption, which already includes today.
+    """
+
+    _attr_icon = "mdi:history"
+    _attr_name = "Enphase Lifetime Consumption"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+
+    def __init__(self, coordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.entry.entry_id}_lifetime_consumption"
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data or {}
+        lifetime = data.get("lifetime_energy", {}) or {}
+        total_wh = _sum_lifetime_since(lifetime, start_date=None)
+        if total_wh is None:
+            return None
+        return round(total_wh / 1000, 3)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        lifetime = data.get("lifetime_energy", {}) or {}
+        attrs: dict = {}
+        if lifetime.get("start_date"):
+            attrs["start_date"] = lifetime["start_date"]
+        return attrs
+
+    @property
+    def device_info(self):
         return battery_device_info(self.coordinator.entry.entry_id)

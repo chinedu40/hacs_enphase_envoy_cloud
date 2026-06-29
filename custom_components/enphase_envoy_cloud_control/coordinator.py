@@ -1,6 +1,8 @@
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, datetime, timezone
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from .const import LOGGER, DEFAULT_POLL_INTERVAL
@@ -31,6 +33,11 @@ class EnphaseCoordinator(DataUpdateCoordinator):
         self.last_refresh = None
         self.last_successful_poll = None
 
+        # Energy stats (today/daily/lifetime) are non-critical and slow. Skip
+        # them on the very first refresh so config-entry setup isn't blocked;
+        # they fill in on the first scheduled poll instead.
+        self._skip_energy = True
+
         super().__init__(
             hass,
             _LOGGER,
@@ -50,11 +57,59 @@ class EnphaseCoordinator(DataUpdateCoordinator):
             _LOGGER.error("[Enphase] Error updating data: %s", err)
             raise UpdateFailed(err)
 
+    @staticmethod
+    def _safe_fetch(label, func, *args):
+        """Call an energy-stats endpoint, returning {} on failure.
+
+        Keeps non-critical energy fetches from aborting the whole update
+        (which would also drop the battery/schedule data).
+        """
+        try:
+            return func(*args) or {}
+        except Exception as err:  # noqa: BLE001 - intentionally broad
+            _LOGGER.warning("[Enphase] %s fetch failed: %s", label, err)
+            return {}
+
+    def _fetch_energy(self):
+        """Fetch the three energy endpoints concurrently.
+
+        Each call is independent and blocking, so running them in a small
+        thread pool collapses their combined latency to roughly the slowest
+        single request. Failures are isolated via _safe_fetch.
+        """
+        # Use HA's configured local time so the month boundary matches the
+        # site's calendar (and the week/year sensor boundaries).
+        month_start = dt_util.now().strftime("%Y-%m-01")
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            today = pool.submit(
+                self._safe_fetch, "today stats", self.client.get_today_stats
+            )
+            daily = pool.submit(
+                self._safe_fetch, "daily energy", self.client.get_daily_energy, month_start
+            )
+            lifetime = pool.submit(
+                self._safe_fetch, "lifetime energy", self.client.get_lifetime_energy
+            )
+            return today.result(), daily.result(), lifetime.result()
+
     def _fetch(self):
         """Synchronous fetch — runs inside executor."""
         try:
             battery_data = self.client.battery_settings() or {}
             schedules = self.client.get_schedules() or {}
+
+            # Energy stats are non-critical and add several blocking HTTP calls.
+            # Skip them on the first refresh so config-entry setup stays fast;
+            # afterwards fetch all three concurrently. When skipped, reuse the
+            # previously fetched values so sensors don't flap to unavailable.
+            if self._skip_energy:
+                self._skip_energy = False
+                prev = self.data or {}
+                today_data = prev.get("today", {}) or {}
+                daily_energy_data = prev.get("daily_energy", {}) or {}
+                lifetime_energy_data = prev.get("lifetime_energy", {}) or {}
+            else:
+                today_data, daily_energy_data, lifetime_energy_data = self._fetch_energy()
 
             # Persist the last schedule payload for entities that reference it
             # outside of the coordinator data structure (legacy behaviour).
@@ -101,6 +156,9 @@ class EnphaseCoordinator(DataUpdateCoordinator):
                 "data": inner_data,
                 "schedules": schedule_block,
                 "schedules_raw": schedules,
+                "today": today_data,
+                "daily_energy": daily_energy_data,
+                "lifetime_energy": lifetime_energy_data,
             }
             _LOGGER.debug("[Enphase] Data fetch complete. Keys: %s", list(merged.keys()))
             return merged
