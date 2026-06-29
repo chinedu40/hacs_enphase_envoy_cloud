@@ -474,6 +474,66 @@ class EnphaseClient:
         _LOGGER.info("[Enphase] Schedule added successfully.")
         return r.json()
 
+    def update_schedule(
+        self,
+        schedule_id,
+        schedule_type,
+        start_time,
+        end_time,
+        limit,
+        days,
+        timezone="UTC",
+    ):
+        """Update an existing schedule in-place via PUT (atomic, no delete+create)."""
+        schedule_type = str(schedule_type).upper()
+        jwt, xsrf = self._ensure_tokens()
+        url = (
+            f"https://enlighten.enphaseenergy.com/service/batteryConfig/api/v1/"
+            f"battery/sites/{self.battery_id}/schedules/{schedule_id}"
+        )
+        headers = {
+            "content-type": "application/json",
+            "e-auth-token": jwt,
+            "x-xsrf-token": xsrf,
+            "username": str(self.user_id),
+            "origin": "https://battery-profile-ui.enphaseenergy.com",
+            "referer": "https://battery-profile-ui.enphaseenergy.com/",
+        }
+        payload = {
+            "timezone": timezone or "UTC",
+            "startTime": start_time[:5],
+            "endTime": end_time[:5],
+            "limit": int(limit),
+            "scheduleType": schedule_type,
+            "days": [int(d) for d in days],
+        }
+        _LOGGER.info("[Enphase] Updating schedule %s: %s", schedule_id, payload)
+        _LOGGER.debug(
+            "[Enphase] update_schedule request: url=%s headers=%s payload=%s",
+            url,
+            {k: v for k, v in headers.items() if k != "e-auth-token"},
+            payload,
+        )
+        r = SESSION.put(url, json=payload, headers=headers, timeout=30)
+        _LOGGER.debug(
+            "[Enphase] update_schedule response: status=%s body=%s",
+            r.status_code,
+            r.text,
+        )
+        if r.status_code == 403:
+            jwt, xsrf = self._ensure_tokens(force_refresh=True)
+            headers["e-auth-token"] = jwt
+            headers["x-xsrf-token"] = xsrf
+            r = SESSION.put(url, json=payload, headers=headers, timeout=30)
+            _LOGGER.debug(
+                "[Enphase] update_schedule retry response: status=%s body=%s",
+                r.status_code,
+                r.text,
+            )
+        r.raise_for_status()
+        _LOGGER.info("[Enphase] Schedule %s updated successfully.", schedule_id)
+        return r.json()
+
     def delete_schedule(self, schedule_id):
         """Delete a schedule by ID (mirrors your REST command)."""
         jwt, xsrf = self._ensure_tokens()
