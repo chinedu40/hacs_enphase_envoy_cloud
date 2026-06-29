@@ -365,18 +365,8 @@ def _register_services(hass: HomeAssistant) -> None:
 
         try:
             await hass.async_add_executor_job(
-                coordinator.client.delete_schedule,
+                coordinator.client.update_schedule,
                 schedule_id,
-            )
-        except Exception as exc:
-            _LOGGER.error("[Enphase] Failed to delete schedule %s: %s", schedule_id, exc)
-            raise HomeAssistantError(
-                f"Failed to delete schedule {schedule_id}: {exc}"
-            ) from exc
-
-        try:
-            await hass.async_add_executor_job(
-                coordinator.client.add_schedule,
                 schedule_type,
                 start_str,
                 end_str,
@@ -385,8 +375,12 @@ def _register_services(hass: HomeAssistant) -> None:
                 timezone,
             )
         except Exception as exc:
-            _LOGGER.error("[Enphase] Failed to add schedule: %s", exc)
-            raise HomeAssistantError(f"Failed to add schedule: {exc}") from exc
+            _LOGGER.error(
+                "[Enphase] Failed to update schedule %s: %s", schedule_id, exc
+            )
+            raise HomeAssistantError(
+                f"Failed to update schedule {schedule_id}: {exc}"
+            ) from exc
 
         await asyncio.sleep(2)
 
