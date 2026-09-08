@@ -399,24 +399,30 @@ class EnphaseClient:
             "referer": "https://battery-profile-ui.enphaseenergy.com/",
         }
 
-        # Payload mapping for each mode type
+        # Enphase's batterySettings PUT rejects PARTIAL bodies for the schedule
+        # controls: sending {"rbdControl": {"enabled": true}} returns HTTP 500
+        # ("Request contains invalid or missing parameters required for
+        # schedules"). The battery-profile web UI PUTs the FULL settings object,
+        # so replicate that: GET current settings, change only the target
+        # control block, PUT the whole object back. cfg uses a distinct
+        # top-level shape (chargeFromGrid) and is left unchanged.
         if short_mode == "cfg":
             payload = {
                 "chargeFromGrid": enable,
                 "acceptedItcDisclaimer": self._now_iso(),
             }
-        elif short_mode == "dtg":
-            payload = {
-                "dtgControl": {
-                    "enabled": enable,
-                    "scheduleSupported": True,
-                }
-            }
+        elif short_mode in ("dtg", "rbd"):
+            current = self.battery_settings()
+            payload = current.get("data", current) if isinstance(current, dict) else {}
+            control_key = f"{short_mode}Control"
+            control = dict(payload.get(control_key) or {})
+            control["enabled"] = enable
+            if short_mode == "dtg":
+                control["scheduleSupported"] = True
             if start_time and end_time:
-                payload["dtgControl"]["startTime"] = self._time_to_minutes(start_time)
-                payload["dtgControl"]["endTime"] = self._time_to_minutes(end_time)
-        elif short_mode == "rbd":
-            payload = {"rbdControl": {"enabled": enable}}
+                control["startTime"] = self._time_to_minutes(start_time)
+                control["endTime"] = self._time_to_minutes(end_time)
+            payload[control_key] = control
         else:
             raise ValueError(f"Unsupported mode: {short_mode}")
 
